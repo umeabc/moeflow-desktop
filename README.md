@@ -134,7 +134,11 @@ cd src-tauri && MOEFLOW_DEVTOOLS=1 ./target/debug/moeflow-desktop.exe
 
 `scripts/window-probe.ps1` 是同一套枚举的**只读**版本（不调用 `ShowWindow`），用来判断「窗口到底关掉了没有」——截图脚本会主动把窗口显示出来，会掩盖掉要观测的状态。
 
-`scripts/click-launcher-instance.ps1 <x 比例> <y 比例>` 用真实鼠标事件驱动实例选择页（WebView2 会忽略合成 `WM_LBUTTON` 消息），用于端到端验证「选实例 → 主窗口加载」这条路径。
+`scripts/click-launcher-instance.ps1 <x 比例> <y 比例>` / `scripts/click-at.ps1 -X <屏幕 x> -Y <屏幕 y>` 用真实鼠标事件驱动界面（WebView2 会忽略合成 `WM_LBUTTON` 消息），用于端到端验证「选实例 → 主窗口加载」这条路径。窗口会滚动或改尺寸时，从截图坐标换算绝对屏幕坐标比按比例点击可靠。
+
+`scripts/resize-window.ps1 -Handle <hwnd> -Width <w> -Height <h>` 把窗口调到表单完整可见——比滚轮滚动可靠（滚轮要求指针在窗口上且窗口是活动窗口，`SetWindowPos` 没这些前提）。
+
+> **键盘输入这条路走不通。** `SendKeys` 只投递给**前台窗口**，而我们的进程抢不到前台（`SetForegroundWindow` 对非前台进程静默失败，即便 `AttachThreadInput` + 最小化/还原也时灵时不灵）。需要往界面里输入文字的验证，别指望这条路——要么改成不依赖输入的场景，要么在测试里直接验证底层逻辑。
 
 排查「某个站点的图片出不来」时开 `MOEFLOW_MEDIA_DEBUG=1`：它会把 API 响应里被改写的每个存储 URL、以及每个被拒绝/失败的候选 origin 打到 stderr。这类问题的答案永远是**API 回来的是什么形式的 URL**，靠猜会绕远路。
 
