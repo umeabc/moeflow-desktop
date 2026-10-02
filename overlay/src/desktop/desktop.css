@@ -1,0 +1,123 @@
+/* Styles for the desktop overlay. Plain CSS under .mf-dock so it cannot collide with the
+   app's own emotion/antd styles. */
+
+.mf-dock__bar {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1200;
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(6px);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mf-dock__bar {
+    background: rgba(34, 39, 46, 0.92);
+  }
+}
+
+.mf-dock__bar-button {
+  padding: 7px 16px;
+  border: 0;
+  border-radius: 19px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.mf-dock__bar-button:hover {
+  background: rgba(128, 128, 128, 0.16);
+}
+
+.mf-dock__bar-button.is-primary {
+  background: #ff657c;
+  color: #fff;
+}
+
+.mf-dock__bar-button.is-primary:hover {
+  background: #ff7b8f;
+}
+
+/* ---- instance list ---- */
+
+.mf-dock__list {
+  max-height: 300px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.mf-dock__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.mf-dock__item:hover {
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.mf-dock__item.is-active {
+  border-color: #1677ff;
+  background: rgba(22, 119, 255, 0.06);
+}
+
+.mf-dock__item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.mf-dock__item-url {
+  display: block;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mf-dock__item-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mf-dock__editor {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(128, 128, 128, 0.22);
+}
+
+/* ---- export dialog ---- */
+
+.mf-dock__field {
+  margin-bottom: 12px;
+}
+
+.mf-dock__field > .ant-typography {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.mf-dock__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mf-dock__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}

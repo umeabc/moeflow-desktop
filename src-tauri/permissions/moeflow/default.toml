@@ -1,0 +1,103 @@
+"$schema" = "../schemas/schema.json"
+
+# One permission per IPC command. Tauri's ACL grants a command only when a capability
+# names a permission that lists it in `commands.allow`, so these have to exist as real
+# permission entries — a permission *set* below merely groups them for the capability.
+[[permission]]
+identifier = "allow-boot-payload"
+description = "Enables the boot_payload command"
+commands.allow = ["boot_payload"]
+
+[[permission]]
+identifier = "allow-set-skip-launcher"
+description = "Enables the set_skip_launcher command"
+commands.allow = ["set_skip_launcher"]
+
+[[permission]]
+identifier = "allow-open-launcher"
+description = "Enables the open_launcher command"
+commands.allow = ["open_launcher"]
+
+[[permission]]
+identifier = "allow-probe-server"
+description = "Enables the probe_server command"
+commands.allow = ["probe_server"]
+
+[[permission]]
+identifier = "allow-upsert-profile"
+description = "Enables the upsert_profile command"
+commands.allow = ["upsert_profile"]
+
+[[permission]]
+identifier = "allow-delete-profile"
+description = "Enables the delete_profile command"
+commands.allow = ["delete_profile"]
+
+[[permission]]
+identifier = "allow-set-active-profile"
+description = "Enables the set_active_profile command"
+commands.allow = ["set_active_profile"]
+
+[[permission]]
+identifier = "allow-cache-stats"
+description = "Enables the cache_stats command"
+commands.allow = ["cache_stats"]
+
+[[permission]]
+identifier = "allow-clear-cache"
+description = "Enables the clear_cache command"
+commands.allow = ["clear_cache"]
+
+[[permission]]
+identifier = "allow-set-cache-limit"
+description = "Enables the set_cache_limit command"
+commands.allow = ["set_cache_limit"]
+
+[[permission]]
+identifier = "allow-export-local"
+description = "Enables the export_local command"
+commands.allow = ["export_local"]
+
+[[permission]]
+identifier = "allow-choose-save-path"
+description = "Enables the choose_save_path command"
+commands.allow = ["choose_save_path"]
+
+[[permission]]
+identifier = "allow-open-path"
+description = "Enables the open_path command"
+commands.allow = ["open_path"]
+
+[[permission]]
+identifier = "allow-open-external"
+description = "Enables the open_external command"
+commands.allow = ["open_external"]
+
+[[permission]]
+identifier = "allow-open-settings"
+description = "Enables the open_settings command"
+commands.allow = ["open_settings"]
+
+# The set the capabilities actually reference. Note the `[default]` table form — writing
+# this as another `[[permission]]` produces a *permission* named "default" rather than a
+# permission set, and `default_permission` then resolves to null, which silently grants
+# nothing.
+[default]
+description = "All MoeFlow desktop IPC commands used by the overlay and the settings window."
+permissions = [
+  "allow-boot-payload",
+  "allow-set-skip-launcher",
+  "allow-open-launcher",
+  "allow-probe-server",
+  "allow-upsert-profile",
+  "allow-delete-profile",
+  "allow-set-active-profile",
+  "allow-cache-stats",
+  "allow-clear-cache",
+  "allow-set-cache-limit",
+  "allow-export-local",
+  "allow-choose-save-path",
+  "allow-open-path",
+  "allow-open-external",
+  "allow-open-settings",
+]

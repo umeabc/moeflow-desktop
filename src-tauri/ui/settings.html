@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>MoeFlow 设置</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 13px; line-height: 1.55;
+    color: #1f2328; background: #f6f7f9;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e8eb; background: #1b1f24; }
+    .card { background: #22272e !important; border-color: #343b43 !important; }
+    input, select { background: #1b1f24 !important; color: #e6e8eb !important; border-color: #3d444d !important; }
+    .row:hover { background: #2a3138 !important; }
+    .muted { color: #9aa4ae !important; }
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid rgba(128,128,128,.25);
+    display: flex; align-items: center; gap: 10px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  main { padding: 16px 20px 24px; }
+  .card {
+    background: #fff; border: 1px solid #e2e5e9; border-radius: 8px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; }
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  }
+  .row:hover { background: #f0f2f5; }
+  .row.active { outline: 2px solid #1677ff; outline-offset: -2px; }
+  .row .name { font-weight: 600; min-width: 130px; }
+  .row .url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .muted { color: #6b7280; font-size: 12px; }
+  label.field { display: block; margin-bottom: 10px; }
+  label.field span { display: block; margin-bottom: 4px; font-size: 12px; }
+  input[type=text] {
+    width: 100%; padding: 6px 9px; border: 1px solid #d0d5dc; border-radius: 6px;
+    font: inherit; background: #fff;
+  }
+  .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  button {
+    font: inherit; padding: 6px 13px; border-radius: 6px; cursor: pointer;
+    border: 1px solid #d0d5dc; background: #fff;
+  }
+  button:hover { border-color: #b6bec9; }
+  button.primary { background: #1677ff; border-color: #1677ff; color: #fff; }
+  button.primary:hover { background: #4096ff; }
+  button.danger { color: #cf222e; border-color: #f0c3c7; }
+  .status { margin-top: 8px; font-size: 12px; min-height: 1.5em; }
+  .status.ok { color: #1a7f37; }
+  .status.err { color: #cf222e; }
+  .progress {
+    height: 6px; border-radius: 3px; background: rgba(128,128,128,.2);
+    overflow: hidden; margin-top: 8px;
+  }
+  .progress > div { height: 100%; width: 0; background: #1677ff; transition: width .2s; }
+  .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .inline input[type=number] { width: 110px; padding: 6px 9px; border-radius: 6px; border: 1px solid #d0d5dc; font: inherit; }
+  hr { border: 0; border-top: 1px solid rgba(128,128,128,.2); margin: 4px 0 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MoeFlow 设置</h1>
+  <span class="muted" id="version"></span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>服务器</h2>
+    <div id="profiles"></div>
+    <hr />
+    <label class="field">
+      <span>名称</span>
+      <input type="text" id="f-name" placeholder="例如：我的 MoeFlow" />
+    </label>
+    <label class="field">
+      <span>站点地址</span>
+      <input type="text" id="f-site" placeholder="https://moeflow.example.org" />
+    </label>
+    <label class="field">
+      <span>API 地址（留空则按站点地址自动探测）</span>
+      <input type="text" id="f-api" placeholder="https://moeflow.example.org/api" />
+    </label>
+    <label class="field">
+      <span>媒体存储域名（可选，逗号分隔）</span>
+      <input type="text" id="f-media" placeholder="https://cdn.example.org" />
+    </label>
+    <div class="buttons">
+      <button id="btn-probe">测试连接</button>
+      <button class="primary" id="btn-save">保存</button>
+      <button id="btn-new">新建</button>
+      <button class="danger" id="btn-delete">删除</button>
+    </div>
+    <div class="status" id="probe-status"></div>
+  </div>
+
+  <div class="card">
+    <h2>图片缓存</h2>
+    <div class="inline">
+      <span id="cache-summary" class="muted">读取中…</span>
+    </div>
+    <div class="inline" style="margin-top:10px">
+      <label>上限 <input type="number" id="cache-limit" min="1" step="1" /> GB</label>
+      <button id="btn-limit">应用</button>
+      <button class="danger" id="btn-clear">清空缓存</button>
+    </div>
+    <div class="progress"><div id="cache-bar"></div></div>
+    <div class="status" id="cache-status"></div>
+  </div>
+</main>
+
+<script>
+const { invoke } = window.__TAURI__.core;
+
+let state = { profiles: [], active: "", editing: null, ports: {} };
+
+const $ = (id) => document.getElementById(id);
+
+function fmtBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function setStatus(el, text, kind) {
+  el.textContent = text || "";
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function renderProfiles() {
+  const box = $("profiles");
+  box.innerHTML = "";
+  for (const p of state.profiles) {
+    const row = document.createElement("div");
+    row.className = "row" + (p.id === state.active ? " active" : "");
+    const port = state.ports[p.id];
+    row.innerHTML = `
+      <span class="name">${escapeHtml(p.name)}</span>
+      <span class="url muted">${escapeHtml(p.api_base)}</span>
+      <span class="muted">${port ? ":" + port : ""}</span>
+    `;
+    row.onclick = async () => {
+      state.active = p.id;
+      state.editing = p;
+      fillForm(p);
+      renderProfiles();
+      await invoke("set_active_profile", { id: p.id });
+    };
+    box.appendChild(row);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function fillForm(p) {
+  $("f-name").value = p?.name ?? "";
+  $("f-site").value = p?.site_url ?? "";
+  $("f-api").value = p?.api_base ?? "";
+  $("f-media").value = (p?.media_origins ?? []).join(", ");
+  $("btn-delete").disabled = !p;
+}
+
+function slug(text) {
+  const base = (text || "server").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return (base || "server") + "-" + Math.random().toString(36).slice(2, 7);
+}
+
+async function refreshCache() {
+  const stats = await invoke("cache_stats");
+  $("cache-summary").textContent =
+    `已缓存 ${stats.entries} 个文件，占用 ${fmtBytes(stats.bytes)} / 上限 ${fmtBytes(stats.limit_bytes)}`;
+  const pct = stats.limit_bytes ? Math.min(100, (stats.bytes / stats.limit_bytes) * 100) : 0;
+  $("cache-bar").style.width = pct + "%";
+  $("cache-limit").value = (stats.limit_bytes / (1024 ** 3)).toFixed(2);
+}
+
+$("btn-probe").onclick = async () => {
+  const input = $("f-api").value.trim() || $("f-site").value.trim();
+  if (!input) { setStatus($("probe-status"), "请先填写站点地址或 API 地址", "err"); return; }
+  setStatus($("probe-status"), "探测中…");
+  try {
+    const result = await invoke("probe_server", { input });
+    setStatus($("probe-status"), result.message, result.ok ? "ok" : "err");
+    if (result.ok && result.api_base) {
+      $("f-api").value = result.api_base;
+      if (!$("f-name").value.trim()) {
+        $("f-name").value = new URL(result.api_base).host;
+      }
+    }
+  } catch (err) {
+    setStatus($("probe-status"), String(err), "err");
+  }
+};
+
+$("btn-new").onclick = () => {
+  state.editing = null;
+  fillForm(null);
+  setStatus($("probe-status"), "填写地址后点「测试连接」再保存");
+};
+
+$("btn-save").onclick = async () => {
+  const site = $("f-site").value.trim();
+  let api = $("f-api").value.trim();
+  if (!site && !api) { setStatus($("probe-status"), "站点地址不能为空", "err"); return; }
+
+  // Confirm the API base before writing it. Leaving the field empty used to mean "use the
+  // site address", which is the one answer that is usually wrong — see the note on
+  // `upsert_profile`, which now enforces this server-side too.
+  if (!api || api === site) {
+    const save = $("btn-save");
+    save.disabled = true;
+    setStatus($("probe-status"), "正在确认 API 地址…");
+    try {
+      const result = await invoke("probe_server", { input: api || site });
+      if (!result.ok || !result.api_base) {
+        setStatus(
+          $("probe-status"),
+          result.message + "（已试过：" + (result.tried || []).join("、") + "）",
+          "err",
+        );
+        return;
+      }
+      api = result.api_base;
+      $("f-api").value = api;
+    } catch (err) {
+      setStatus($("probe-status"), String(err), "err");
+      return;
+    } finally {
+      save.disabled = false;
+    }
+  }
+
+  const profile = {
+    id: state.editing?.id ?? slug($("f-name").value || site),
+    name: $("f-name").value.trim() || site || api,
+    site_url: site || api,
+    api_base: api,
+    port: state.editing?.port ?? 0,
+    allow_invalid_certs: state.editing?.allow_invalid_certs ?? false,
+    media_origins: $("f-media").value.split(",").map((s) => s.trim()).filter(Boolean),
+  };
+
+  try {
+    const payload = await invoke("upsert_profile", { profile });
+    applyPayload(payload);
+    setStatus($("probe-status"), "已保存", "ok");
+  } catch (err) {
+    setStatus($("probe-status"), String(err), "err");
+  }
+};
+
+$("btn-delete").onclick = async () => {
+  if (!state.editing) return;
+  try {
+    const payload = await invoke("delete_profile", { id: state.editing.id });
+    state.editing = null;
+    applyPayload(payload);
+    fillForm(null);
+    setStatus($("probe-status"), "已删除", "ok");
+  } catch (err) {
+    setStatus($("probe-status"), String(err), "err");
+  }
+};
+
+$("btn-limit").onclick = async () => {
+  const gb = parseFloat($("cache-limit").value);
+  if (!isFinite(gb) || gb <= 0) { setStatus($("cache-status"), "请输入有效的上限", "err"); return; }
+  await invoke("set_cache_limit", { bytes: Math.round(gb * 1024 ** 3) });
+  await refreshCache();
+  setStatus($("cache-status"), "已应用", "ok");
+};
+
+$("btn-clear").onclick = async () => {
+  await invoke("clear_cache");
+  await refreshCache();
+  setStatus($("cache-status"), "缓存已清空", "ok");
+};
+
+function applyPayload(payload) {
+  state.profiles = payload.profiles;
+  state.active = payload.active;
+  state.editing = payload.profiles.find((p) => p.id === payload.active) ?? null;
+  fillForm(state.editing);
+  renderProfiles();
+}
+
+(async () => {
+  const payload = await invoke("boot_payload");
+  applyPayload(payload);
+  await refreshCache();
+})();
+</script>
+</body>
+</html>

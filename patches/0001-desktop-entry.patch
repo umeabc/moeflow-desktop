@@ -1,0 +1,27 @@
+diff --git a/src/components/project/OutputList.tsx b/src/components/project/OutputList.tsx
+index 5bafa93..07cbe0a 100644
+--- a/src/components/project/OutputList.tsx
++++ b/src/components/project/OutputList.tsx
+@@ -226,7 +226,7 @@ export const OutputList: FC<OutputListProps> = ({
+           icon="link"
+           type="link"
+           linkProps={{
+-            href: 'https://files.kozzzx.com/labelplus/LabelPlus_PS-Script_latest.zip',
++            href: '/__ps-script', // desktop: cached locally; falls back to the original host in a browser
+             target: '_blank',
+             rel: 'noopener noreferrer',
+           }}
+diff --git a/src/index.tsx b/src/index.tsx
+index e7701dd..3c145a8 100644
+--- a/src/index.tsx
++++ b/src/index.tsx
+@@ -24,6 +24,9 @@ import {
+ } from './store/hotKey/slice';
+ import { loadHotKey } from './utils/storage';
+ import { createDebugLogger } from './utils/debug-logger';
++// Desktop overlay: mounts the instance switcher and local-export dock into
++// document.body. No-op when the bundle is served in a plain browser.
++import './desktop/mount';
+ const debugLogger = createDebugLogger('app');
+ 
+ // 时间插件

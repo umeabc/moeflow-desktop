@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>选择 MoeFlow 实例</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --brand: #ff657c;
+    --brand-dark: #d94c66;
+    --paper: #fdf4f6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 24px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #1f2328;
+    background: var(--paper);
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e8eb; background: #1b1f24; }
+    .panel { background: #22272e !important; border-color: #343b43 !important; }
+    .instance { border-color: #343b43 !important; }
+    .instance:hover { background: #2a3138 !important; }
+    input { background: #1b1f24 !important; color: #e6e8eb !important; border-color: #3d444d !important; }
+    .muted { color: #9aa4ae !important; }
+  }
+
+  header { text-align: center; margin-bottom: 22px; }
+  header h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .02em; }
+  header p { margin: 0; font-size: 12px; }
+
+  .panel {
+    width: 100%;
+    max-width: 520px;
+    background: #fff;
+    border: 1px solid #f0dfe3;
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 6px 24px rgba(217, 76, 102, .08);
+  }
+
+  .instances { display: flex; flex-direction: column; gap: 8px; }
+
+  .instance {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid #e6e9ee;
+    border-radius: 10px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, transform .1s ease;
+  }
+  .instance:hover { border-color: var(--brand); background: #fff8f9; }
+  .instance:active { transform: translateY(1px); }
+  .instance .body { flex: 1; min-width: 0; }
+  .instance .name { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .instance .url {
+    font-size: 12px; color: #6b7280;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 9px;
+    background: rgba(255, 101, 124, .14); color: var(--brand-dark);
+  }
+  .chev { color: var(--brand); font-size: 16px; flex-shrink: 0; }
+
+  .muted { color: #6b7280; font-size: 12px; }
+
+  .divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 14px; }
+  .divider::before, .divider::after {
+    content: ""; flex: 1; height: 1px; background: rgba(128,128,128,.22);
+  }
+
+  label.field { display: block; margin-bottom: 10px; }
+  label.field span { display: block; margin-bottom: 4px; font-size: 12px; }
+  input[type=text] {
+    width: 100%; padding: 8px 11px; border: 1px solid #d8dde4; border-radius: 8px;
+    font: inherit; background: #fff;
+  }
+  input[type=text]:focus { outline: 2px solid rgba(255,101,124,.35); outline-offset: -1px; border-color: var(--brand); }
+
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+
+  button {
+    font: inherit; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid #d8dde4; background: #fff; color: inherit;
+  }
+  button:hover { border-color: #b9c1cc; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  button.primary:hover { background: #ff7b8f; border-color: #ff7b8f; }
+  button.primary:disabled { opacity: .55; cursor: default; }
+  button.link {
+    border: 0; background: transparent; color: var(--brand-dark);
+    padding: 4px 6px; text-decoration: underline;
+  }
+
+  .status { margin-top: 10px; font-size: 12px; min-height: 1.5em; }
+  .status.ok { color: #1a7f37; }
+  .status.err { color: #cf222e; }
+
+  .remember {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 16px; justify-content: center; font-size: 12px;
+  }
+  .remember input { accent-color: var(--brand); }
+
+  form { display: none; }
+  form.open { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MoeFlow</h1>
+  <p class="muted">选择要连接的实例</p>
+</header>
+
+<div class="panel">
+  <div class="instances" id="instances"></div>
+
+  <div class="row" style="margin-top:12px">
+    <span class="spacer"></span>
+    <button class="link" id="btn-add">添加实例</button>
+  </div>
+
+  <form id="form">
+    <div class="divider"><span class="muted">新实例</span></div>
+
+    <label class="field">
+      <span>站点地址</span>
+      <input type="text" id="f-site" placeholder="https://moeflow.example.org" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>API 地址（留空则自动探测）</span>
+      <input type="text" id="f-api" placeholder="留空即按站点地址探测" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>名称（可选）</span>
+      <input type="text" id="f-name" placeholder="例如：我的 MoeFlow" autocomplete="off" />
+    </label>
+
+    <div class="row">
+      <button type="button" id="btn-probe">测试连接</button>
+      <span class="spacer"></span>
+      <button type="button" id="btn-cancel">取消</button>
+      <button type="button" class="primary" id="btn-save">保存并连接</button>
+    </div>
+    <div class="status" id="status"></div>
+  </form>
+
+  <label class="remember">
+    <input type="checkbox" id="skip" />
+    启动时直接进入上次使用的实例
+  </label>
+</div>
+
+<script>
+const { invoke } = window.__TAURI__.core;
+const $ = (id) => document.getElementById(id);
+
+let state = { profiles: [], active: "", active_port: 0, skip_launcher: false, cache: null };
+let pendingApiBase = null;
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function setStatus(text, kind) {
+  const el = $("status");
+  el.textContent = text || "";
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+function render() {
+  const box = $("instances");
+  box.innerHTML = "";
+  for (const p of state.profiles) {
+    const button = document.createElement("button");
+    button.className = "instance";
+    button.innerHTML = `
+      <span class="body">
+        <span class="name">
+          ${escapeHtml(p.name)}
+          ${p.id === state.active ? '<span class="badge">上次使用</span>' : ""}
+        </span>
+        <span class="url">${escapeHtml(p.api_base)}</span>
+      </span>
+      <span class="chev">›</span>
+    `;
+    button.onclick = () => connect(p.id);
+    box.appendChild(button);
+  }
+}
+
+async function connect(id) {
+  // Rust navigates the main window to this instance's loopback origin and hides this one.
+  await invoke("set_active_profile", { id });
+}
+
+function applyPayload(payload) {
+  state = payload;
+  $("skip").checked = !!payload.skip_launcher;
+  render();
+}
+
+$("btn-add").onclick = () => {
+  $("form").classList.add("open");
+  $("f-site").focus();
+  setStatus("");
+};
+
+$("btn-cancel").onclick = () => {
+  $("form").classList.remove("open");
+  pendingApiBase = null;
+  ["f-site", "f-api", "f-name"].forEach((id) => ($(id).value = ""));
+  setStatus("");
+};
+
+$("btn-probe").onclick = async () => {
+  const input = $("f-api").value.trim() || $("f-site").value.trim();
+  if (!input) { setStatus("请先填写站点地址", "err"); return; }
+  setStatus("探测中…");
+  if (await resolveApiBase(input)) setStatus(`可用：${pendingApiBase}`, "ok");
+};
+
+/**
+ * Resolve an API base by probing, and remember it.
+ *
+ * Returns the resolved base, or null after putting the reason in the status line.
+ *
+ * This is the **only** way an API base enters a profile. The address a person types is a
+ * *site* address — where the frontend lives — and the API may sit under `/api` on that same
+ * host, on a sibling subdomain, or at the root. Guessing gets it wrong: persisting the site
+ * address as the API base sends `/api/v1/x` to `<site>/v1/x`, which nginx answers from the
+ * SPA fallback. Most calls then fail in ways that look like a server bug — a POST gets 405
+ * from nginx, and the login captcha simply never appears.
+ */
+async function resolveApiBase(input) {
+  try {
+    const result = await invoke("probe_server", { input });
+    if (result.ok && result.api_base) {
+      pendingApiBase = result.api_base;
+      $("f-api").value = result.api_base;
+      if (!$("f-name").value.trim()) {
+        try { $("f-name").value = new URL(result.api_base).host; } catch (_) {}
+      }
+      return result.api_base;
+    }
+    setStatus(result.message + "（已试过：" + (result.tried || []).join("、") + "）", "err");
+  } catch (err) {
+    setStatus(String(err), "err");
+  }
+  return null;
+}
+
+$("btn-save").onclick = async () => {
+  const site = $("f-site").value.trim();
+  let typed = $("f-api").value.trim();
+  if (!site && !typed) { setStatus("站点地址不能为空", "err"); return; }
+
+  // Resolve the API base before writing it. Leaving the field empty used to mean "use the
+  // site address" — the one answer that is usually wrong. A base that differs from the site
+  // is taken as typed, so a correct-but-offline server can still be saved.
+  let api = typed;
+  if (!api || api === site) {
+    const save = $("btn-save");
+    save.disabled = true;
+    setStatus("正在确认 API 地址…");
+    api = await resolveApiBase(typed || site);
+    save.disabled = false;
+    if (!api) return;
+  } else if (!pendingApiBase) {
+    pendingApiBase = api;
+  }
+
+  const profile = {
+    id: "custom-" + Math.random().toString(36).slice(2, 9),
+    name: $("f-name").value.trim() || (site || api),
+    site_url: site || api,
+    api_base: api,
+    port: 0,
+    allow_invalid_certs: false,
+    media_origins: [],
+  };
+
+  try {
+    const payload = await invoke("upsert_profile", { profile });
+    applyPayload(payload);
+    const created = payload.profiles.find((p) => p.name === profile.name);
+    $("btn-cancel").onclick();
+    if (created) await connect(created.id);
+  } catch (err) {
+    setStatus(String(err), "err");
+  }
+};
+
+$("skip").onchange = async () => {
+  try {
+    applyPayload(await invoke("set_skip_launcher", { skip: $("skip").checked }));
+  } catch (err) {
+    setStatus(String(err), "err");
+  }
+};
+
+(async () => {
+  applyPayload(await invoke("boot_payload"));
+})();
+</script>
+</body>
+</html>
