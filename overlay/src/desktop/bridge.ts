@@ -92,13 +92,6 @@ export interface ApiProjectSummary {
   name: string;
 }
 
-export interface ApiProjectDetail {
-  id: string;
-  name: string;
-  targets?: ApiTarget[];
-  source_language?: ApiLanguage;
-}
-
 export interface Profile {
   id: string;
   name: string;
@@ -159,8 +152,23 @@ export interface ExportProgress {
 
 export const api = {
   listProjects: () => apiGet<ApiProjectSummary[]>('v1/user/projects'),
-  project: (id: string) => apiGet<ApiProjectDetail>(`v1/projects/${id}`),
+  /**
+   * A project's translation targets.
+   *
+   * These are **not** on the project detail — that carries only `target_count`, so reading
+   * `detail.targets` yields undefined and the language list comes up empty. They live at
+   * `/v1/projects/{id}/targets`, unpaginated in practice: the upstream list component asks
+   * for `limit: 100000` and reads the count from the `x-pagination-count` header.
+   */
+  projectTargets: (id: string) =>
+    apiGet<ApiTarget[] | { list?: ApiTarget[] }>(`v1/projects/${id}/targets?limit=100000`),
 };
+
+/** Tolerate either a bare array or a wrapped list; the endpoint has been both. */
+export function asTargetList(payload: ApiTarget[] | { list?: ApiTarget[] } | null | undefined): ApiTarget[] {
+  if (Array.isArray(payload)) return payload;
+  return Array.isArray(payload?.list) ? payload.list : [];
+}
 
 /** Pull the project id out of `/projects/<uuid>` so the dialog can prefill. */
 export function currentProjectId(): string | null {

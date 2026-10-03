@@ -65,7 +65,9 @@ fn main() {
                 .join("media");
 
             let mut store = ProfileStore::load(&config_dir);
-            store.ensure_ports();
+            // Startup is the only moment our own servers are not yet holding these ports,
+            // so it is the only moment a "is this port free?" test means anything.
+            store.reassign_ports_held_elsewhere();
             let _ = store.save(&config_dir);
             let cache_limit = store.cache_limit_bytes;
 
@@ -203,20 +205,27 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
             "instances" => open_launcher(app),
-            "settings" => open_settings_window(app),
+            "settings" => {
+                if let Err(err) = open_settings_window(app) {
+                    eprintln!("[moeflow] could not open the settings window: {err}");
+                }
+            }
             "reload" => navigate_main(app, active_port(app)),
             "quit" => app.exit(0),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
-            // Left click restores the window.
+            // Left click opens the instance picker, not the app window. The picker is the
+            // app's landing page — it is where you decide *which* server you are looking at —
+            // and reaching it from the tray has to work even when the current instance is
+            // unreachable and the main window has nothing useful to show.
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
             } = event
             {
-                show_main(tray.app_handle());
+                open_launcher(tray.app_handle());
             }
         });
 

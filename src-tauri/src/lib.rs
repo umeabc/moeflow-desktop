@@ -217,9 +217,13 @@ pub fn reveal_main_if_hidden(app: &AppHandle) {
 /// reachable regardless of which instance is loaded — including when the current instance
 /// is unreachable and the main window is showing nothing useful — and keeps it independent
 /// of whatever the main window happens to be rendering.
+///
+/// Exactly one picker exists at a time: the window outlives being closed, so a second call
+/// raises the one that is already there instead of stacking another on top.
 pub fn open_launcher(app: &AppHandle) {
     if let Some(existing) = app.get_webview_window("launcher") {
         let _ = existing.show();
+        let _ = existing.unminimize();
         let _ = existing.set_focus();
         return;
     }
@@ -259,17 +263,23 @@ pub fn open_launcher(app: &AppHandle) {
 }
 
 /// A small native window for server profiles and cache management.
-pub fn open_settings_window(app: &AppHandle) {
+///
+/// Returns the builder's error rather than dropping it: a settings window that fails to
+/// appear is otherwise indistinguishable from a button that does nothing, which is a
+/// genuinely hard thing to debug from the outside.
+pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(existing) = app.get_webview_window("settings") {
         let _ = existing.show();
+        let _ = existing.unminimize();
         let _ = existing.set_focus();
-        return;
+        return Ok(());
     }
-    let _ = WebviewWindowBuilder::new(app, "settings", shell_url(app, "settings.html"))
+    WebviewWindowBuilder::new(app, "settings", shell_url(app, "settings.html"))
         .title("MoeFlow 设置")
         .inner_size(820.0, 660.0)
         .min_inner_size(640.0, 480.0)
-        .build();
+        .build()?;
+    Ok(())
 }
 
 /// Ports in use, for the settings window.

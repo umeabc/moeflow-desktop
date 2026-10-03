@@ -191,20 +191,41 @@ impl ProfileStore {
         self.get(&self.active).or_else(|| self.profiles.first())
     }
 
-    /// Give every profile a stable loopback port, reassigning any that are unset or now taken.
+    /// Give every profile that lacks one a loopback port, and split up duplicates.
     ///
-    /// Keeping the port stable across restarts matters: the `token` cookie is scoped to the
-    /// loopback origin, so a changing port would silently log the user out.
+    /// The port is part of the profile's *origin*, and the session cookie is scoped to the
+    /// origin — so a port that changes silently logs the user out. It is therefore assigned
+    /// once and left alone.
+    ///
+    /// In particular this must **not** test whether the port is free. `upsert_profile` calls
+    /// it while our own loopback servers are listening on exactly those ports, so every
+    /// existing profile would look "taken" and be moved to a fresh origin — which is how
+    /// adding one instance managed to discard the logins of all the others.
     pub fn ensure_ports(&mut self) {
         let mut claimed: Vec<u16> = Vec::new();
         for profile in self.profiles.iter_mut() {
-            if profile.port != 0 && !claimed.contains(&profile.port) && port_is_free(profile.port) {
+            if profile.port != 0 && !claimed.contains(&profile.port) {
                 claimed.push(profile.port);
             } else {
                 let fresh = allocate_port(&claimed);
                 claimed.push(fresh);
                 profile.port = fresh;
             }
+        }
+    }
+
+    /// Move any profile whose port is held by something that is not us.
+    ///
+    /// Only meaningful at startup, *before* our own servers bind — afterwards they occupy
+    /// these ports themselves and every profile would look taken. This is the one point at
+    /// which "is the port free?" is a question worth asking.
+    pub fn reassign_ports_held_elsewhere(&mut self) {
+        let mut claimed: Vec<u16> = Vec::new();
+        for profile in self.profiles.iter_mut() {
+            if profile.port == 0 || claimed.contains(&profile.port) || !port_is_free(profile.port) {
+                profile.port = allocate_port(&claimed);
+            }
+            claimed.push(profile.port);
         }
     }
 }
@@ -518,5 +539,117 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), ports.len(), "ports must be distinct: {ports:?}");
+    }
+
+    /// The regression this guards: `upsert_profile` calls `ensure_ports` while our own
+    /// loopback servers are listening. A "is the port free?" test therefore answers *no*
+    /// for every profile already in use, moves each to a fresh port — and because the port
+    /// is part of the origin the session cookie is scoped to, every other instance silently
+    /// loses its login the moment a new one is added.
+    #[test]
+    fn ensure_ports_ignores_a_port_that_is_already_listening() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let held = listener.local_addr().unwrap().port();
+
+        let mut store = ProfileStore::with_presets();
+        store.profiles[0].port = held;
+        store.ensure_ports();
+
+        assert_eq!(
+            store.profiles[0].port, held,
+            "a port held by our own running server must be left alone"
+        );
+    }
+
+    #[test]
+    fn ensure_ports_splits_duplicates_and_keeps_the_first() {
+        let mut store = ProfileStore::with_presets();
+        let second = Profile {
+            id: "second".into(),
+            name: "second".into(),
+            site_url: "https://example.org".into(),
+            api_base: "https://example.org/api".into(),
+            port: 0,
+            allow_invalid_certs: false,
+            media_origins: vec![],
+        };
+        store.profiles[0].port = 47999;
+        store.profiles.push(second);
+        store.ensure_ports();
+
+        assert_eq!(store.profiles[0].port, 47999, "the first claimant keeps the port");
+        assert_ne!(store.profiles[1].port, 47999);
+        assert_ne!(store.profiles[1].port, 0);
+    }
+
+    /// Startup is the one moment our own servers are not yet bound, so this variant *does*
+    /// probe — and must move a port that some other process is squatting on.
+    #[test]
+    fn startup_reassignment_moves_a_port_held_by_someone_else() {
+        let squatter = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let taken = squatter.local_addr().unwrap().port();
+
+        let mut store = ProfileStore::with_presets();
+        store.profiles[0].port = taken;
+        store.reassign_ports_held_elsewhere();
+
+        assert_ne!(store.profiles[0].port, taken);
+        assert_ne!(store.profiles[0].port, 0);
+    }
+
+    /// The whole sequence `upsert_profile` performs, with the servers that are holding the
+    /// ports modelled as real listeners.
+    ///
+    /// This is the user-visible bug in full: add one instance, and every instance you were
+    /// already signed in to comes back asking for a password — because its origin, and
+    /// therefore its cookie, quietly changed underneath it.
+    #[test]
+    fn adding_a_profile_leaves_the_running_ones_on_their_own_origins() {
+        let mut store = ProfileStore::with_presets();
+        store.profiles[0].port = 0;
+        store.ensure_ports();
+        let first = Profile {
+            id: "second".into(),
+            name: "second".into(),
+            site_url: "https://example.org".into(),
+            api_base: "https://example.org/api".into(),
+            port: 0,
+            allow_invalid_certs: false,
+            media_origins: vec![],
+        };
+        store.profiles.push(first);
+        store.ensure_ports();
+
+        let original: Vec<u16> = store.profiles.iter().map(|p| p.port).collect();
+
+        // Both servers are now listening — this is the state `upsert_profile` runs in.
+        let _live: Vec<TcpListener> = original
+            .iter()
+            .map(|p| TcpListener::bind(("127.0.0.1", *p)).expect("port must be free to bind"))
+            .collect();
+
+        // ...and the user adds a third instance.
+        let used: Vec<u16> = store.profiles.iter().map(|p| p.port).collect();
+        store.profiles.push(Profile {
+            id: "third".into(),
+            name: "third".into(),
+            site_url: "https://third.example".into(),
+            api_base: "https://third.example/api".into(),
+            port: allocate_port(&used),
+            allow_invalid_certs: false,
+            media_origins: vec![],
+        });
+        store.ensure_ports();
+
+        let after: Vec<u16> = store.profiles.iter().map(|p| p.port).collect();
+        assert_eq!(
+            &after[..original.len()],
+            &original[..],
+            "adding an instance must not move the ones already signed in"
+        );
+        assert!(
+            !original.contains(&after[original.len()]),
+            "the new profile must not land on a live port: {after:?}"
+        );
     }
 }

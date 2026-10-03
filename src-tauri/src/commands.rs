@@ -238,6 +238,12 @@ pub fn set_active_profile(
     if let Some(launcher) = app.get_webview_window("launcher") {
         let _ = launcher.hide();
     }
+    // `set_active_profile` is also reached from the settings window's 「连接到此实例」 button.
+    // That is an explicit request to go to that instance, so the window it was invoked from
+    // steps aside rather than sitting in front of the app it just opened.
+    if let Some(settings) = app.get_webview_window("settings") {
+        let _ = settings.hide();
+    }
     Ok(port)
 }
 
@@ -330,6 +336,9 @@ pub fn open_external(app: AppHandle, url: String) {
 }
 
 #[tauri::command]
-pub fn open_settings(app: AppHandle) {
-    crate::open_settings_window(&app);
+pub fn open_settings(app: AppHandle) -> Result<(), String> {
+    crate::open_settings_window(&app).map_err(|err| {
+        eprintln!("[moeflow] could not open the settings window: {err}");
+        format!("无法打开设置窗口：{err}")
+    })
 }

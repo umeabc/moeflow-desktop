@@ -4,67 +4,133 @@
 <meta charset="utf-8" />
 <title>MoeFlow 设置</title>
 <style>
-  :root { color-scheme: light dark; }
+  /* Colours are defined per scheme rather than patched with `!important` in a dark block —
+     see the note in launcher.html for the white-on-white button that produced. */
+  :root {
+    color-scheme: light dark;
+    --brand: #ff657c;
+    --brand-link: #c9344f;
+    --brand-soft: rgba(255, 101, 124, .14);
+    --accent: #1677ff;
+    --accent-hover: #4096ff;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e2e5e9;
+    --divider: rgba(128, 128, 128, .2);
+    --text: #1f2328;
+    --text-muted: #6b7280;
+    --button-bg: #ffffff;
+    --button-border: #d0d5dc;
+    --button-text: #1f2328;
+    --button-hover: #f3f4f6;
+    --row-hover: #f0f2f5;
+    --input-bg: #ffffff;
+    --input-border: #d0d5dc;
+    --ok: #1a7f37;
+    --err: #cf222e;
+    --danger: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --brand-link: #ff9aa9;
+      /* Darker than the light-mode accent on purpose: white on #2f81f7 is 3.8:1, which is
+         under AA for button-sized text. #1f6feb puts it at 4.6:1. */
+      --accent: #1f6feb;
+      --accent-hover: #2f81f7;
+      --bg: #1b1f24;
+      --panel: #22272e;
+      --border: #343b43;
+      --divider: rgba(200, 200, 200, .18);
+      --text: #e6e8eb;
+      --text-muted: #9aa4ae;
+      --button-bg: #2d333b;
+      --button-border: #444c56;
+      --button-text: #e6e8eb;
+      --button-hover: #373e47;
+      --row-hover: #2a3138;
+      --input-bg: #1b1f24;
+      --input-border: #444c56;
+      --ok: #3fb950;
+      /* #f85149 on these backgrounds is 3.8:1 — legible-ish but under AA. */
+      --err: #ff8a80;
+      --danger: #ff8a80;
+    }
+  }
+
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 0;
     font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
     font-size: 13px; line-height: 1.55;
-    color: #1f2328; background: #f6f7f9;
-  }
-  @media (prefers-color-scheme: dark) {
-    body { color: #e6e8eb; background: #1b1f24; }
-    .card { background: #22272e !important; border-color: #343b43 !important; }
-    input, select { background: #1b1f24 !important; color: #e6e8eb !important; border-color: #3d444d !important; }
-    .row:hover { background: #2a3138 !important; }
-    .muted { color: #9aa4ae !important; }
+    color: var(--text); background: var(--bg);
   }
   header {
-    padding: 14px 20px; border-bottom: 1px solid rgba(128,128,128,.25);
+    padding: 14px 20px; border-bottom: 1px solid var(--divider);
     display: flex; align-items: center; gap: 10px;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
   main { padding: 16px 20px 24px; }
   .card {
-    background: #fff; border: 1px solid #e2e5e9; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 14px 16px; margin-bottom: 14px;
   }
   .card h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; }
+
   .row {
     display: flex; align-items: center; gap: 10px;
     padding: 8px 10px; border-radius: 6px; cursor: pointer;
   }
-  .row:hover { background: #f0f2f5; }
-  .row.active { outline: 2px solid #1677ff; outline-offset: -2px; }
+  .row:hover { background: var(--row-hover); }
+  /* "Selected for editing" and "currently in use" are different things and must not look
+     the same, or clicking a row to edit it reads as clicking to switch instances. */
+  .row.editing { outline: 2px solid var(--accent); outline-offset: -2px; }
   .row .name { font-weight: 600; min-width: 130px; }
   .row .url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .muted { color: #6b7280; font-size: 12px; }
-  label.field { display: block; margin-bottom: 10px; }
-  label.field span { display: block; margin-bottom: 4px; font-size: 12px; }
-  input[type=text] {
-    width: 100%; padding: 6px 9px; border: 1px solid #d0d5dc; border-radius: 6px;
-    font: inherit; background: #fff;
+  .row .port { font-variant-numeric: tabular-nums; }
+  .tag {
+    font-size: 11px; padding: 1px 7px; border-radius: 9px;
+    background: var(--brand-soft); color: var(--brand-link); white-space: nowrap;
   }
+  .muted { color: var(--text-muted); font-size: 12px; }
+
+  label.field { display: block; margin-bottom: 10px; }
+  label.field span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
+  input[type=text], input[type=number] {
+    width: 100%; padding: 6px 9px; border-radius: 6px; font: inherit;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg); color: var(--text);
+  }
+  input[type=text]:focus, input[type=number]:focus {
+    outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent);
+  }
+
   .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
   button {
     font: inherit; padding: 6px 13px; border-radius: 6px; cursor: pointer;
-    border: 1px solid #d0d5dc; background: #fff;
+    border: 1px solid var(--button-border);
+    background: var(--button-bg); color: var(--button-text);
   }
-  button:hover { border-color: #b6bec9; }
-  button.primary { background: #1677ff; border-color: #1677ff; color: #fff; }
-  button.primary:hover { background: #4096ff; }
-  button.danger { color: #cf222e; border-color: #f0c3c7; }
+  button:hover { border-color: var(--accent); background: var(--button-hover); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button.danger { color: var(--danger); border-color: var(--button-border); }
+  button.danger:hover { border-color: var(--danger); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:disabled:hover { border-color: var(--button-border); background: var(--button-bg); }
+
   .status { margin-top: 8px; font-size: 12px; min-height: 1.5em; }
-  .status.ok { color: #1a7f37; }
-  .status.err { color: #cf222e; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+
   .progress {
-    height: 6px; border-radius: 3px; background: rgba(128,128,128,.2);
+    height: 6px; border-radius: 3px; background: var(--divider);
     overflow: hidden; margin-top: 8px;
   }
-  .progress > div { height: 100%; width: 0; background: #1677ff; transition: width .2s; }
+  .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
   .inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .inline input[type=number] { width: 110px; padding: 6px 9px; border-radius: 6px; border: 1px solid #d0d5dc; font: inherit; }
-  hr { border: 0; border-top: 1px solid rgba(128,128,128,.2); margin: 4px 0 12px; }
+  .inline label { display: flex; align-items: center; gap: 6px; }
+  .inline input[type=number] { width: 110px; }
+  hr { border: 0; border-top: 1px solid var(--divider); margin: 4px 0 12px; }
 </style>
 </head>
 <body>
@@ -98,6 +164,7 @@
       <button id="btn-probe">测试连接</button>
       <button class="primary" id="btn-save">保存</button>
       <button id="btn-new">新建</button>
+      <button id="btn-use">连接到此实例</button>
       <button class="danger" id="btn-delete">删除</button>
     </div>
     <div class="status" id="probe-status"></div>
@@ -121,7 +188,7 @@
 <script>
 const { invoke } = window.__TAURI__.core;
 
-let state = { profiles: [], active: "", editing: null, ports: {} };
+let state = { profiles: [], active: "", editing: null };
 
 const $ = (id) => document.getElementById(id);
 
@@ -138,32 +205,35 @@ function setStatus(el, text, kind) {
   el.className = "status" + (kind ? " " + kind : "");
 }
 
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
 function renderProfiles() {
   const box = $("profiles");
   box.innerHTML = "";
   for (const p of state.profiles) {
     const row = document.createElement("div");
-    row.className = "row" + (p.id === state.active ? " active" : "");
-    const port = state.ports[p.id];
+    const editing = state.editing && state.editing.id === p.id;
+    row.className = "row" + (editing ? " editing" : "");
     row.innerHTML = `
       <span class="name">${escapeHtml(p.name)}</span>
       <span class="url muted">${escapeHtml(p.api_base)}</span>
-      <span class="muted">${port ? ":" + port : ""}</span>
+      <span class="port muted">:${p.port}</span>
+      ${p.id === state.active ? '<span class="tag">当前使用</span>' : ""}
     `;
-    row.onclick = async () => {
-      state.active = p.id;
+    // Clicking a row only picks it for editing. It deliberately does *not* switch the
+    // active instance: that used to reveal the main window, so a click meant to edit a
+    // server made the app jump in front of the settings window.
+    row.onclick = () => {
       state.editing = p;
       fillForm(p);
       renderProfiles();
-      await invoke("set_active_profile", { id: p.id });
+      setStatus($("probe-status"), "");
     };
     box.appendChild(row);
   }
-}
-
-function escapeHtml(s) {
-  return String(s ?? "").replace(/[&<>"]/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
 function fillForm(p) {
@@ -172,6 +242,7 @@ function fillForm(p) {
   $("f-api").value = p?.api_base ?? "";
   $("f-media").value = (p?.media_origins ?? []).join(", ");
   $("btn-delete").disabled = !p;
+  $("btn-use").disabled = !p || p.id === state.active;
 }
 
 function slug(text) {
@@ -198,7 +269,7 @@ $("btn-probe").onclick = async () => {
     if (result.ok && result.api_base) {
       $("f-api").value = result.api_base;
       if (!$("f-name").value.trim()) {
-        $("f-name").value = new URL(result.api_base).host;
+        try { $("f-name").value = new URL(result.api_base).host; } catch (_) {}
       }
     }
   } catch (err) {
@@ -209,7 +280,18 @@ $("btn-probe").onclick = async () => {
 $("btn-new").onclick = () => {
   state.editing = null;
   fillForm(null);
+  $("f-site").focus();
   setStatus($("probe-status"), "填写地址后点「测试连接」再保存");
+};
+
+$("btn-use").onclick = async () => {
+  if (!state.editing) return;
+  try {
+    await invoke("set_active_profile", { id: state.editing.id });
+    setStatus($("probe-status"), "已切换，主窗口已打开该实例", "ok");
+  } catch (err) {
+    setStatus($("probe-status"), String(err), "err");
+  }
 };
 
 $("btn-save").onclick = async () => {
@@ -219,7 +301,7 @@ $("btn-save").onclick = async () => {
 
   // Confirm the API base before writing it. Leaving the field empty used to mean "use the
   // site address", which is the one answer that is usually wrong — see the note on
-  // `upsert_profile`, which now enforces this server-side too.
+  // `upsert_profile`, which enforces this server-side too.
   if (!api || api === site) {
     const save = $("btn-save");
     save.disabled = true;
@@ -254,6 +336,9 @@ $("btn-save").onclick = async () => {
   try {
     const payload = await invoke("upsert_profile", { profile });
     applyPayload(payload);
+    state.editing = payload.profiles.find((p) => p.id === profile.id) ?? state.editing;
+    fillForm(state.editing);
+    renderProfiles();
     setStatus($("probe-status"), "已保存", "ok");
   } catch (err) {
     setStatus($("probe-status"), String(err), "err");
@@ -262,12 +347,12 @@ $("btn-save").onclick = async () => {
 
 $("btn-delete").onclick = async () => {
   if (!state.editing) return;
+  const name = state.editing.name;
   try {
     const payload = await invoke("delete_profile", { id: state.editing.id });
     state.editing = null;
     applyPayload(payload);
-    fillForm(null);
-    setStatus($("probe-status"), "已删除", "ok");
+    setStatus($("probe-status"), `已删除「${name}」`, "ok");
   } catch (err) {
     setStatus($("probe-status"), String(err), "err");
   }
@@ -288,12 +373,22 @@ $("btn-clear").onclick = async () => {
 };
 
 function applyPayload(payload) {
+  const editingId = state.editing?.id;
   state.profiles = payload.profiles;
   state.active = payload.active;
-  state.editing = payload.profiles.find((p) => p.id === payload.active) ?? null;
+  // Keep the form on whatever was being edited, including a profile that was just created.
+  state.editing = payload.profiles.find((p) => p.id === editingId) ?? null;
   fillForm(state.editing);
   renderProfiles();
 }
+
+// The settings window stays alive between visits, so a profile added elsewhere (or an
+// instance switched from the picker) would otherwise leave a stale list on screen.
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState !== "visible") return;
+  applyPayload(await invoke("boot_payload"));
+  await refreshCache();
+});
 
 (async () => {
   const payload = await invoke("boot_payload");

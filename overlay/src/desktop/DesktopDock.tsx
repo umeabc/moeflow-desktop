@@ -12,6 +12,7 @@ import {
   api,
   ApiProjectSummary,
   ApiTarget,
+  asTargetList,
   currentProjectId,
   ExportProgress,
   ExportReport,
@@ -39,6 +40,7 @@ export function DesktopDock() {
   const [projectId, setProjectId] = useState<string | undefined>();
   const [targets, setTargets] = useState<ApiTarget[]>([]);
   const [targetId, setTargetId] = useState<string | undefined>();
+  const [targetsLoading, setTargetsLoading] = useState(false);
   const [includeImages, setIncludeImages] = useState(true);
   const [destination, setDestination] = useState<string>('');
 
@@ -74,19 +76,24 @@ export function DesktopDock() {
       .catch((err) => setError(String(err.message ?? err)));
   }, [open, projects.length]);
 
-  // Load targets whenever the project changes.
+  // Load targets whenever the project changes. They come from their own endpoint — the
+  // project detail has `target_count`, not the list, so reading `detail.targets` left the
+  // language picker permanently empty and the export button permanently disabled.
   useEffect(() => {
     if (!projectId) return;
     setTargets([]);
     setTargetId(undefined);
+    setError('');
+    setTargetsLoading(true);
     api
-      .project(projectId)
-      .then((detail) => {
-        const list = detail.targets ?? [];
+      .projectTargets(projectId)
+      .then((payload) => {
+        const list = asTargetList(payload);
         setTargets(list);
         if (list.length === 1) setTargetId(list[0].id);
       })
-      .catch((err) => setError(String(err.message ?? err)));
+      .catch((err) => setError(String(err.message ?? err)))
+      .finally(() => setTargetsLoading(false));
   }, [projectId]);
 
   // Progress + completion events from the Rust side.
@@ -212,12 +219,25 @@ export function DesktopDock() {
           <Text type="secondary">目标语言</Text>
           <Select
             style={{ width: '100%' }}
-            placeholder="选择目标语言"
+            placeholder={targetsLoading ? '读取中…' : '选择目标语言'}
+            loading={targetsLoading}
+            notFoundContent={targetsLoading ? '读取中…' : '该作品没有翻译目标'}
             value={targetId}
             onChange={setTargetId}
             options={targets.map((t) => ({ value: t.id, label: targetLabel(t) }))}
           />
         </div>
+
+        {/* A project with no target cannot be exported. Say so instead of leaving an empty
+            dropdown and a disabled button with no explanation. */}
+        {projectId && !targetsLoading && targets.length === 0 && !error && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message="该作品还没有翻译目标，请在网页端为它添加一个目标语言后再导出。"
+          />
+        )}
 
         <div className="mf-dock__field">
           <Checkbox checked={includeImages} onChange={(e) => setIncludeImages(e.target.checked)}>

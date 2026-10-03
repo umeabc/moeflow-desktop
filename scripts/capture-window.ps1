@@ -37,9 +37,14 @@ foreach ($h in [WinCap]::ForPid([uint32]$proc.Id)) {
   [WinCap]::GetWindowRect($h, [ref]$r) | Out-Null
   $w = $r.Right-$r.Left; $ht = $r.Bottom-$r.Top
   if ($w -lt 400 -or $ht -lt 400) { continue }
+  # The ranges must not overlap. They used to: "launcher" matched 600-900 wide and
+  # "settings" 700-1000, so with both open the settings window satisfied *both* tests and
+  # whichever ran last won — asking for the launcher handed back the settings window.
+  # Windows are told apart by size because their titles are Chinese, which does not survive
+  # the round trip through a shell argument on this box.
   if ($which -eq 'main'     -and $ht -gt 850 -and $w -gt 1200) { $target = $h }
-  if ($which -eq 'launcher' -and $w -gt 600 -and $w -lt 900 -and $ht -gt 500 -and $ht -lt 800) { $target = $h }
-  if ($which -eq 'settings' -and $w -gt 700 -and $w -lt 1000 -and $ht -gt 550 -and $ht -lt 800) { $target = $h }
+  if ($which -eq 'launcher' -and $w -gt 600 -and $w -lt 815 -and $ht -gt 500 -and $ht -lt 800) { $target = $h }
+  if ($which -eq 'settings' -and $w -ge 815 -and $w -lt 1000 -and $ht -gt 550 -and $ht -lt 800) { $target = $h }
 }
 if (-not $target) { Write-Error "no '$which' window found"; exit 1 }
 
