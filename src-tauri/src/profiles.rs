@@ -20,6 +20,22 @@ use serde::{Deserialize, Serialize};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
+const PRESETS_JSON: &str = include_str!("../presets/servers.json");
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerPreset {
+    pub host: String,
+    pub name: String,
+    pub api_base: String,
+    #[serde(default)]
+    pub media_origins: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PresetsFile {
+    presets: Vec<ServerPreset>,
+}
+
 /// Ports are allocated from here so they stay clear of common dev servers.
 const PORT_RANGE_START: u16 = 47100;
 
@@ -207,6 +223,36 @@ fn allocate_port(used: &[u16]) -> u16 {
     }
     // Fall back to an OS-assigned port rather than failing to start.
     0
+}
+
+fn load_presets() -> Vec<ServerPreset> {
+    serde_json::from_str::<PresetsFile>(PRESETS_JSON)
+        .map(|f| f.presets)
+        .unwrap_or_default()
+}
+
+/// Extract the host from a URL or address string.
+fn extract_host(input: &str) -> Option<String> {
+    let trimmed = input.trim().trim_end_matches('/');
+    if let Some((_, rest)) = trimmed.split_once("://") {
+        let host = rest.split('/').next().unwrap_or(rest);
+        if !host.is_empty() {
+            return Some(host.to_string());
+        }
+    }
+    None
+}
+
+/// Find a preset matching the given input address.
+pub fn find_preset(input: &str) -> Option<ServerPreset> {
+    let host = extract_host(input)?;
+    load_presets().into_iter().find(|p| p.host == host)
+}
+
+/// Build a fallback API base when no preset matches: `<input>/api`.
+pub fn default_api_base(input: &str) -> String {
+    let trimmed = input.trim().trim_end_matches('/');
+    format!("{}/api", trimmed)
 }
 
 /// Build the candidate API bases to try for a user-entered URL, most likely first.
@@ -423,6 +469,43 @@ mod tests {
         assert_eq!(only.api_base, "https://api.moetran.com");
         assert_eq!(only.site_url, "https://moetran.com");
         assert_eq!(store.active, "moetran", "the preset must also be the active one");
+    }
+
+    #[test]
+    fn preset_matching_extracts_host_correctly() {
+        assert_eq!(extract_host("https://moetran.com"), Some("moetran.com".into()));
+        assert_eq!(extract_host("https://moetran.com/"), Some("moetran.com".into()));
+        assert_eq!(extract_host("https://moeflow.basmc.org/some/path"), Some("moeflow.basmc.org".into()));
+        assert_eq!(extract_host("http://172.29.133.24:8080"), Some("172.29.133.24:8080".into()));
+        assert_eq!(extract_host("not-a-url"), None);
+    }
+
+    #[test]
+    fn finds_preset_for_known_hosts() {
+        let preset = find_preset("https://moetran.com");
+        assert!(preset.is_some());
+        let p = preset.unwrap();
+        assert_eq!(p.host, "moetran.com");
+        assert_eq!(p.api_base, "https://api.moetran.com");
+
+        let preset = find_preset("https://moeflow.basmc.org/some/path");
+        assert!(preset.is_some());
+        let p = preset.unwrap();
+        assert_eq!(p.host, "moeflow.basmc.org");
+        assert_eq!(p.api_base, "https://moeflow.basmc.org/api");
+    }
+
+    #[test]
+    fn no_preset_for_unknown_hosts() {
+        assert!(find_preset("https://example.com").is_none());
+        assert!(find_preset("https://192.168.1.1").is_none());
+    }
+
+    #[test]
+    fn default_api_base_appends_api_segment() {
+        assert_eq!(default_api_base("https://example.com"), "https://example.com/api");
+        assert_eq!(default_api_base("https://example.com/"), "https://example.com/api");
+        assert_eq!(default_api_base("http://192.168.1.1:8080"), "http://192.168.1.1:8080/api");
     }
 
     #[test]

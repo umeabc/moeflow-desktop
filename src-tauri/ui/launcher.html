@@ -257,12 +257,13 @@ async function resolveApiBase(input) {
     if (result.ok && result.api_base) {
       pendingApiBase = result.api_base;
       $("f-api").value = result.api_base;
-      if (!$("f-name").value.trim()) {
+      if (!$("f-name").value.trim() && result.matched) {
         try { $("f-name").value = new URL(result.api_base).host; } catch (_) {}
       }
       return result.api_base;
     }
-    setStatus(result.message + "（已试过：" + (result.tried || []).join("、") + "）", "err");
+    setStatus(result.message, result.ok ? "ok" : "err");
+    return result.ok ? result.api_base : null;
   } catch (err) {
     setStatus(String(err), "err");
   }

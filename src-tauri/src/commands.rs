@@ -77,6 +77,18 @@ pub fn open_launcher(app: AppHandle) {
 /// Probe a user-entered server URL and resolve which API base actually answers.
 #[tauri::command]
 pub async fn probe_server(input: String) -> Result<ProbeResult, String> {
+    // Try preset first — zero network cost.
+    if let Some(preset) = profiles::find_preset(&input) {
+        return Ok(ProbeResult {
+            ok: true,
+            api_base: Some(preset.api_base.clone()),
+            matched: Some(preset.host.clone()),
+            message: format!("已匹配预设：{}", preset.name),
+            tried: vec![],
+        });
+    }
+
+    // No preset; probe the candidates.
     let candidates = profiles::api_base_candidates(&input);
     let client = crate::probe_client();
 
@@ -92,17 +104,25 @@ pub async fn probe_server(input: String) -> Result<ProbeResult, String> {
         }
     }
 
+    // Everything failed; fall back to `<input>/api`.
+    let fallback = profiles::default_api_base(&input);
     Ok(ProbeResult {
-        ok: false,
-        api_base: None,
+        ok: true,
+        api_base: Some(fallback.clone()),
         matched: None,
-        message: "未找到可用的 MoeFlow 后端。请确认地址是否正确、服务是否在运行。".into(),
+        message: format!("未找到可用后端，已设为默认：{fallback}"),
         tried: candidates,
     })
 }
 
 /// Resolve an address to an API base, or explain which candidates were tried.
 async fn resolve_api_base(input: &str) -> Result<String, String> {
+    // Try preset first.
+    if let Some(preset) = profiles::find_preset(input) {
+        return Ok(preset.api_base);
+    }
+
+    // No preset; probe the candidates.
     let candidates = profiles::api_base_candidates(input);
     let client = crate::probe_client();
     for candidate in &candidates {
@@ -110,10 +130,9 @@ async fn resolve_api_base(input: &str) -> Result<String, String> {
             return Ok(candidate.clone());
         }
     }
-    Err(format!(
-        "无法确认 API 地址。{} 都没有在 /ping 上应答 pong——请检查地址是否正确、服务是否在运行。",
-        candidates.join("、")
-    ))
+
+    // Everything failed; fall back to `<input>/api`.
+    Ok(profiles::default_api_base(input))
 }
 
 #[tauri::command]
@@ -122,20 +141,29 @@ pub async fn upsert_profile(
     state: tauri::State<'_, AppState>,
     mut profile: Profile,
 ) -> Result<BootPayload, String> {
-    // Settle the API base here rather than trusting whichever editor produced this profile.
-    // Both of them used to fall back to the site address when the field was left empty,
-    // which stores a base that answers nothing but SPA shells — a client that looks
-    // connected and then fails one endpoint at a time. Enforcing it at the single point
-    // where profiles are written means a new caller cannot reintroduce that.
+    // Try preset first — instant if it matches.
     if profiles::api_base_needs_resolution(&profile) {
         let input = if profile.api_base.trim().is_empty() {
             profile.site_url.clone()
         } else {
             profile.api_base.clone()
         };
-        profile.api_base = resolve_api_base(&input).await?;
-        if profile.site_url.trim().is_empty() {
-            profile.site_url = profile.api_base.clone();
+
+        if let Some(preset) = profiles::find_preset(&input) {
+            profile.api_base = preset.api_base;
+            profile.media_origins = preset.media_origins;
+            if profile.name.trim().is_empty() {
+                profile.name = preset.name;
+            }
+            if profile.site_url.trim().is_empty() {
+                profile.site_url = input;
+            }
+        } else {
+            // No preset; resolve through probing or fall back to default.
+            profile.api_base = resolve_api_base(&input).await?;
+            if profile.site_url.trim().is_empty() {
+                profile.site_url = profile.api_base.clone();
+            }
         }
     }
 

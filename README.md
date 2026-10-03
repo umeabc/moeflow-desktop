@@ -46,6 +46,18 @@ GET  /               →  同 launcher.html
 
 **每个服务器档位绑定各自的固定端口。** `token` cookie 按 origin 隔离，端口不同 → 切换服务器时登录态天然隔离，不会串号（端口变了也会导致登录态丢失，所以端口是持久化的）。
 
+## 服务器预设
+
+`src-tauri/presets/servers.json` 包含已知 MoeFlow 站点的配置，编译期嵌入：
+
+- **moeflow.basmc.org** — 彩翻（basmc）
+- **moetran.com** — 尨译 MoeTran（API 在 `api.moetran.com`）
+- **demo.moeflow.org** — MoeFlow 演示站
+
+在实例选择页/设置页填入站点地址时，客户端先查预设表：匹配 host 即直接用预设的 `api_base` 和 `media_origins`，**无需网络探测**。未命中的地址才走自动探测（尝试 `<site>/api`、`<site>`、`https://api.<host>` 并用 `/ping` 验证）。
+
+如果探测全部失败，则按 `<site>/api` 作为兜底（多数 nginx 部署都是这个形态）。
+
 ## 启动流程
 
 首次启动**不会**直接进入某个实例，而是打开实例选择页（`src-tauri/ui/launcher.html`）：

@@ -227,15 +227,12 @@ $("btn-save").onclick = async () => {
     try {
       const result = await invoke("probe_server", { input: api || site });
       if (!result.ok || !result.api_base) {
-        setStatus(
-          $("probe-status"),
-          result.message + "（已试过：" + (result.tried || []).join("、") + "）",
-          "err",
-        );
+        setStatus($("probe-status"), result.message, "err");
         return;
       }
       api = result.api_base;
       $("f-api").value = api;
+      setStatus($("probe-status"), result.message, "ok");
     } catch (err) {
       setStatus($("probe-status"), String(err), "err");
       return;

@@ -1,0 +1,22 @@
+{
+  "presets": [
+    {
+      "host": "moeflow.basmc.org",
+      "name": "彩翻（basmc）",
+      "api_base": "https://moeflow.basmc.org/api",
+      "media_origins": []
+    },
+    {
+      "host": "moetran.com",
+      "name": "尨译 MoeTran",
+      "api_base": "https://api.moetran.com",
+      "media_origins": ["https://api.moetran.com"]
+    },
+    {
+      "host": "demo.moeflow.org",
+      "name": "MoeFlow 演示站",
+      "api_base": "https://demo.moeflow.org/api",
+      "media_origins": []
+    }
+  ]
+}
