@@ -130,9 +130,31 @@ npm run test:rust                 # 纯逻辑单元测试（浮点格式化、La
 npm run build                     # tauri build → NSIS 安装包
 ```
 
-产物：`src-tauri/target/release/bundle/nsis/MoeFlow_0.1.0_x64-setup.exe`
+产物：`src-tauri/target/release/bundle/nsis/MoeFlow_0.1.0_x64-setup.exe`（约 6.8 MB）
 
 MSVC 环境：若 `link.exe` 找不到库，用 `scripts/msvc-env.sh` 设置 `LIB`/`INCLUDE`（本机把工具链装在 `C:\BuildTools`，非默认路径，`vcvars64.bat` 也慢）。
+
+### WebView2 引导程序下载失败
+
+`webviewInstallMode` 是 `embedBootstrapper`：**构建时**要把微软的 1.8 MB 引导程序下载回来嵌进安装包（`fail` 会看到 `Downloading https://go.microsoft.com/fwlink/p/?LinkId=2124703` 然后连接被重置）。本机走 `127.0.0.1:1445` 代理时这个地址必挂，但这台机器**直连**是通的，所以把域名排除出代理即可：
+
+```bash
+NO_PROXY="go.microsoft.com,microsoft.com" npm run build
+```
+
+> 换成 `downloadBootstrapper` 可以绕开构建期下载，但那等于把「装不装得上」押在**目标机器**装的时候能连上微软——干净环境验收恰恰不该有这个前提。嵌进去之后，只有目标机器真的缺 WebView2 运行时（Win11 一律自带）才会去联网。
+
+### 安装包内容与「干净环境」验收
+
+NSIS 包解开后是这样（`7z l` 或 `7z x` 可直接看）：
+
+```
+moeflow-desktop.exe            7.5 MB
+web\...                       13 MB   上游前端产物（bundle.resources）
+$TEMP\MicrosoftEdgeWebview2Setup.exe  1.8 MB  WebView2 引导程序
+```
+
+`web\` 是随包资源，运行时由 `web_root()` 通过 `app.path().resource_dir()` 定位；**找不到时才会退回到编译期写死的仓库路径**——那个路径在别人机器上不存在，所以这个回退只在开发机上有效。装完后要验的就是它：把仓库里的 `frontend/build` 临时改名，再从别处跑安装出来的 exe，若仍能打开登录页，说明资源定位是对的。
 
 ### 调试
 
