@@ -14,8 +14,7 @@ use moeflow_desktop_lib::commands::AppState;
 use moeflow_desktop_lib::media::MediaCache;
 use moeflow_desktop_lib::profiles::ProfileStore;
 use moeflow_desktop_lib::{
-    active_port, navigate_main, open_launcher, open_settings_window, restart_servers,
-    skip_launcher,
+    active_port, navigate_main, open_launcher, open_shell, restart_servers, skip_launcher,
 };
 
 /// How often the media cache index is written out.
@@ -205,11 +204,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main(app),
             "instances" => open_launcher(app),
-            "settings" => {
-                if let Err(err) = open_settings_window(app) {
-                    eprintln!("[moeflow] could not open the settings window: {err}");
-                }
-            }
+            "settings" => open_shell(app, "settings.html"),
             "reload" => navigate_main(app, active_port(app)),
             "quit" => app.exit(0),
             _ => {}

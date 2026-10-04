@@ -73,6 +73,8 @@ identifier = "allow-open-external"
 description = "Enables the open_external command"
 commands.allow = ["open_external"]
 
+# Switches the shell window to its settings view. It only navigates the window that already
+# exists — it must never create one, see the note on `open_shell`.
 [[permission]]
 identifier = "allow-open-settings"
 description = "Enables the open_settings command"

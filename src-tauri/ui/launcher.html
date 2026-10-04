@@ -89,7 +89,7 @@
 
   .instances { display: flex; flex-direction: column; gap: 8px; }
   .instances:empty::after {
-    content: "还没有配置任何实例，点右下角「设置」添加一个。";
+    content: "还没有配置任何实例，切到「设置」添加一个。";
     display: block;
     padding: 18px 4px;
     text-align: center;
@@ -128,12 +128,25 @@
 
   .muted { color: var(--text-muted); font-size: 12px; }
 
-  .footer {
-    display: flex; align-items: center; gap: 8px;
-    margin-top: 16px; padding-top: 14px;
-    border-top: 1px solid var(--divider);
+  /* One window hosts both views, so the switch between them is a plain same-origin
+     navigation — no second webview window to create, and no IPC involved. */
+  .tabs {
+    display: flex; gap: 4px; align-items: center;
+    margin: -4px 0 16px;
   }
-  .footer .spacer { flex: 1; }
+  .tabs a {
+    padding: 5px 12px; border-radius: 8px;
+    font-size: 12px; text-decoration: none;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+  }
+  .tabs a:hover { color: var(--text); background: var(--button-hover); }
+  .tabs a.current {
+    color: var(--brand-link);
+    border-color: var(--brand);
+    background: var(--brand-soft);
+  }
+  .tabs .spacer { flex: 1; }
 
   button {
     font: inherit; padding: 7px 15px; border-radius: 8px; cursor: pointer;
@@ -163,12 +176,12 @@
 </header>
 
 <div class="panel">
-  <div class="instances" id="instances"></div>
+  <nav class="tabs">
+    <a href="/launcher.html" class="current">实例选择</a>
+    <a href="/settings.html">设置</a>
+  </nav>
 
-  <div class="footer">
-    <span class="spacer"></span>
-    <button id="btn-settings">设置</button>
-  </div>
+  <div class="instances" id="instances"></div>
   <div class="error" id="error"></div>
 
   <label class="remember">
@@ -237,10 +250,8 @@ async function refresh() {
   }
 }
 
-// Adding and editing instances lives in the settings window. Keeping one list here and one
-// editor there means this page has exactly one job — pick where to connect.
-$("btn-settings").onclick = () => invoke("open_settings").catch(showError);
-
+// Adding and editing instances lives in the other view. Keeping one list here and one editor
+// there means this view has exactly one job — pick where to connect.
 $("skip").onchange = async () => {
   try {
     applyPayload(await invoke("set_skip_launcher", { skip: $("skip").checked }));

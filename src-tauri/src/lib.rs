@@ -213,30 +213,62 @@ pub fn reveal_main_if_hidden(app: &AppHandle) {
 
 /// Show the instance picker (“launcher”).
 ///
-/// The picker is its own window rather than a page inside the main window. That keeps it
-/// reachable regardless of which instance is loaded — including when the current instance
-/// is unreachable and the main window is showing nothing useful — and keeps it independent
-/// of whatever the main window happens to be rendering.
+/// The shell is one window holding two views — the instance picker and the settings — rather
+/// than two windows. See `SHELL_VIEWS` for why that is not merely tidier.
 ///
-/// Exactly one picker exists at a time: the window outlives being closed, so a second call
+/// It is a window of its own rather than a page inside the main window, so it stays reachable
+/// regardless of which instance is loaded — including when the current instance is
+/// unreachable and the main window is showing nothing useful.
+///
+/// Exactly one shell exists at a time: the window outlives being closed, so a second call
 /// raises the one that is already there instead of stacking another on top.
 pub fn open_launcher(app: &AppHandle) {
+    open_shell(app, "launcher.html");
+}
+
+/// The view a shell window is showing, keyed by the file name it was loaded from.
+pub const SHELL_VIEWS: [&str; 2] = ["launcher.html", "settings.html"];
+
+/// Show the shell window, switching it to `page` if it is on the other view.
+///
+/// **The window must only ever be created during `setup`.** Building a webview window from a
+/// synchronous `#[tauri::command]` deadlocks: sync commands run on the main thread, and
+/// `WebviewWindowBuilder::build` waits on the event loop that the command is itself holding.
+/// The HWND is created before the block, so the symptom is a window that appears with a
+/// correct title and size, paints nothing, and freezes the whole app.
+///
+/// Switching views is a plain navigation inside the already-working window, so it is safe
+/// from anywhere.
+pub fn open_shell(app: &AppHandle, page: &str) {
     if let Some(existing) = app.get_webview_window("launcher") {
         let _ = existing.show();
         let _ = existing.unminimize();
         let _ = existing.set_focus();
+        // Only navigate when the view actually differs, so reopening does not throw away a
+        // half-filled form.
+        let on_page = existing
+            .url()
+            .ok()
+            .and_then(|url| url.path_segments().map(|s| s.last().unwrap_or("").to_string()))
+            .map(|last| last == page)
+            .unwrap_or(false);
+        if !on_page {
+            if let Ok(url) = shell_view_url(app, page).parse() {
+                let _ = existing.navigate(url);
+            }
+        }
         return;
     }
 
     let app_for_events = app.clone();
     let built = WebviewWindowBuilder::new(app, "launcher", shell_url(app, "launcher.html"))
-        .title("选择 MoeFlow 实例")
-        .inner_size(760.0, 620.0)
-        .min_inner_size(620.0, 520.0)
+        .title("MoeFlow")
+        .inner_size(840.0, 680.0)
+        .min_inner_size(680.0, 520.0)
         .resizable(true)
         .build()
         .map(|window| {
-            // Closing the picker without choosing should not leave the app in limbo: if the
+            // Closing the shell without choosing should not leave the app in limbo: if the
             // main window has never been shown, reveal it on the remembered instance.
             let app = app_for_events;
             window.on_window_event(move |event| {
@@ -252,34 +284,23 @@ pub fn open_launcher(app: &AppHandle) {
             });
         });
 
-    // Never swallow this: if the picker cannot be created the app would otherwise start
+    // Never swallow this: if the shell cannot be created the app would otherwise start
     // with no visible window at all. Fall back to showing the main window.
     if let Err(err) = built {
-        eprintln!("[moeflow] could not open the instance picker: {err}");
+        eprintln!("[moeflow] could not open the shell window: {err}");
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.show();
         }
     }
 }
 
-/// A small native window for server profiles and cache management.
-///
-/// Returns the builder's error rather than dropping it: a settings window that fails to
-/// appear is otherwise indistinguishable from a button that does nothing, which is a
-/// genuinely hard thing to debug from the outside.
-pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window("settings") {
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        let _ = existing.set_focus();
-        return Ok(());
+/// Absolute URL of a shell view, for navigating the shell window between pages.
+fn shell_view_url(app: &AppHandle, page: &str) -> String {
+    let port = shell_port(app);
+    if port != 0 {
+        return format!("http://127.0.0.1:{port}/{page}");
     }
-    WebviewWindowBuilder::new(app, "settings", shell_url(app, "settings.html"))
-        .title("MoeFlow 设置")
-        .inner_size(820.0, 660.0)
-        .min_inner_size(640.0, 480.0)
-        .build()?;
-    Ok(())
+    format!("http://tauri.localhost/{page}")
 }
 
 /// Ports in use, for the settings window.

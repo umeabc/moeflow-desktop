@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Permissions for the MoeFlow shell windows.",
-  "windows": ["main", "launcher", "settings"],
+  "windows": ["main", "launcher"],
   "remote": {
     "urls": ["http://127.0.0.1:*", "http://localhost:*"]
   },

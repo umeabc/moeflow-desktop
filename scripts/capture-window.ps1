@@ -42,9 +42,10 @@ foreach ($h in [WinCap]::ForPid([uint32]$proc.Id)) {
   # whichever ran last won — asking for the launcher handed back the settings window.
   # Windows are told apart by size because their titles are Chinese, which does not survive
   # the round trip through a shell argument on this box.
-  if ($which -eq 'main'     -and $ht -gt 850 -and $w -gt 1200) { $target = $h }
-  if ($which -eq 'launcher' -and $w -gt 600 -and $w -lt 815 -and $ht -gt 500 -and $ht -lt 800) { $target = $h }
-  if ($which -eq 'settings' -and $w -ge 815 -and $w -lt 1000 -and $ht -gt 550 -and $ht -lt 800) { $target = $h }
+  # The picker and the settings are views of one window, so `launcher` and `settings` name
+  # the same thing; both spellings are accepted because they read better at call sites.
+  if ($which -eq 'main' -and $ht -gt 850 -and $w -gt 1200) { $target = $h }
+  if ($which -in 'launcher', 'settings', 'shell' -and $w -ge 800 -and $w -lt 1100 -and $ht -gt 550 -and $ht -lt 850) { $target = $h }
 }
 if (-not $target) { Write-Error "no '$which' window found"; exit 1 }
 

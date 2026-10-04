@@ -41,7 +41,7 @@ function Describe {
     # Guess the window from its size; the titles are Chinese and do not survive a shell
     # argument on this box. Keep these ranges disjoint from capture-window.ps1's, or a list
     # that says "launcher" can name a window that a capture would not have returned.
-    $label = if ($ht -gt 850) { 'main' } elseif ($w -lt 815) { 'launcher' } elseif ($w -lt 1000) { 'settings' } else { 'other' }
+    $label = if ($ht -gt 850) { 'main' } elseif ($w -ge 800 -and $w -lt 1100) { 'shell' } else { 'other' }
     Write-Output ("  {0,-9} visible={1,-5} {2}x{3}" -f $label, [Probe]::IsWindowVisible($h), $w, $ht)
   }
 }

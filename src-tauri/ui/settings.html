@@ -65,10 +65,19 @@
     color: var(--text); background: var(--bg);
   }
   header {
-    padding: 14px 20px; border-bottom: 1px solid var(--divider);
+    padding: 12px 20px; border-bottom: 1px solid var(--divider);
     display: flex; align-items: center; gap: 10px;
   }
   header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  /* Same tab bar as the picker view — one dialog, two views. */
+  .tabs { display: flex; gap: 4px; align-items: center; }
+  .tabs a {
+    padding: 4px 11px; border-radius: 8px; font-size: 12px;
+    text-decoration: none; color: var(--text-muted); border: 1px solid transparent;
+  }
+  .tabs a:hover { color: var(--text); background: var(--button-hover); }
+  .tabs a.current { color: var(--brand-link); border-color: var(--brand); background: var(--brand-soft); }
+  header .spacer { flex: 1; }
   main { padding: 16px 20px 24px; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -135,7 +144,11 @@
 </head>
 <body>
 <header>
-  <h1>MoeFlow 设置</h1>
+  <nav class="tabs">
+    <a href="/launcher.html">实例选择</a>
+    <a href="/settings.html" class="current">设置</a>
+  </nav>
+  <span class="spacer"></span>
   <span class="muted" id="version"></span>
 </header>
 
@@ -284,11 +297,12 @@ $("btn-new").onclick = () => {
   setStatus($("probe-status"), "填写地址后点「测试连接」再保存");
 };
 
+// Switches the active instance and reveals the app. This shell window steps aside; the
+// picker view is one tab away if you want it back.
 $("btn-use").onclick = async () => {
   if (!state.editing) return;
   try {
     await invoke("set_active_profile", { id: state.editing.id });
-    setStatus($("probe-status"), "已切换，主窗口已打开该实例", "ok");
   } catch (err) {
     setStatus($("probe-status"), String(err), "err");
   }
