@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      API 27+ 的覆盖：这一档才有 windowLightNavigationBar，所以浅色导航栏 + 深色图标
+      只能在这里声明。values/ 里的 Base 保持不设 navigationBarColor。
+    -->
+    <style name="Theme.MoeFlow" parent="Theme.MoeFlow.Base">
+        <item name="android:navigationBarColor">@color/color_surface</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

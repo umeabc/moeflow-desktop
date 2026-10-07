@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标：前景是 MoeFlow 的角色 logo（已去白底、放大到圆内接 72dp 的安全区），
+  背景是一层纯色。
+
+  为什么前景要自己去底、并缩到安全区内：源 logo 是不透明的白底方图，直接当自适应图标的前景，
+  系统遮罩会把角色的下半身切掉（自适应图标保证可见的只有画布中央 66dp 圆，多数遮罩约 72dp）。
+  去底用的是标准 un-matte：alpha = 1 - min(r,g,b)/255，再按 alpha 反求原始墨色。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <!--
+      主题图标（Android 13+）复用前景位图：系统只取它的 alpha 通道再按壁纸染色，
+      而这份前景本身就是"黑色墨 + alpha 深浅"，正好合适。不加这一层 lint 会报 MonochromeLauncherIcon。
+    -->
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

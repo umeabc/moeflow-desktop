@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+captures/
+.cxx/
+.externalNativeBuild/
+
+# release 签名凭据与密钥库：不进仓库。模板见 keystore.properties.example
+keystore.properties
+*.jks
+*.keystore

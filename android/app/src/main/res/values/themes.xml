@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      各 API 级别共用的主题。
+
+      为什么拆成 Base + 一个空的 Theme.MoeFlow：`android:windowLightNavigationBar` 是 **API 27**
+      才加的属性，而 minSdk 是 26。直接写在 values/ 里 lint 会报 NewApi —— 低版本上这类属性 id
+      有可能被厂商的私有属性撞上，所以官方建议放进 values-v27。而带限定符的资源是**整体替换**
+      而不是逐项合并，因此公共部分必须先抽成 Base，否则 v27 那份得把所有条目抄一遍。
+    -->
+    <style name="Theme.MoeFlow.Base" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/color_primary</item>
+        <item name="colorOnPrimary">@color/color_on_primary</item>
+        <item name="colorPrimaryContainer">@color/color_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/color_on_primary_container</item>
+        <item name="android:colorBackground">@color/color_background</item>
+        <item name="colorSurface">@color/color_surface</item>
+        <item name="colorOnSurface">@color/color_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/color_on_surface_variant</item>
+        <item name="colorOutline">@color/color_outline</item>
+        <item name="colorError">@color/color_error</item>
+        <item name="android:windowBackground">@color/color_surface</item>
+        <item name="android:statusBarColor">@color/color_surface</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <!--
+          这里**故意不设** android:navigationBarColor。
+
+          API 26 上不存在"浅色导航栏图标"这个能力。把导航栏刷成浅色却又没法把图标变深，
+          得到的就是白底白图标、三个按钮看不见。留系统默认（深色栏 + 浅色图标）最稳，
+          代价只是 Android 8.0 上导航栏不跟主题走。API 27+ 由 values-v27 覆盖成
+          浅色栏 + 深色图标，和页面一致。
+        -->
+    </style>
+
+    <style name="Theme.MoeFlow" parent="Theme.MoeFlow.Base" />
+</resources>
