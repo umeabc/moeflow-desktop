@@ -38,6 +38,17 @@ if [ "${SKIP_PATCHES:-0}" != "1" ]; then
 fi
 
 if [ ! -d node_modules ]; then
+  # The vendored lock is not ours to keep in sync, and at the pinned commit upstream's
+  # package-lock.json disagrees with package.json — `babel-plugin-macros` is ^3.1.0 in
+  # the manifest but only 2.8.0 in the lock. `npm ci` refuses to run against a lock that
+  # is out of step, so this step used to work only on a machine that already had
+  # node_modules (the usual local case) and failed on every clean checkout.
+  #
+  # Resync the lock from the manifest, then install reproducibly from the resynced lock.
+  # `npm install` alone would also work but would leave the install unpinned.
+  echo "==> syncing package-lock.json with package.json"
+  npm install --package-lock-only --no-audit --no-fund
+
   echo "==> npm ci"
   npm ci --no-audit --no-fund
 fi

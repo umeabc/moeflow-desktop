@@ -15,7 +15,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "==> fetching $UPSTREAM_REPO @ $UPSTREAM_SHA"
-git clone --filter=blob:none --sparse "$UPSTREAM_REPO" "$WORK/moeflow"
+# `core.symlinks=false` is deliberate. Upstream's frontend-v1 carries exactly one
+# symlink (`.eslintignore`), and a Windows `cp -r` cannot recreate symlinks at all — it
+# dies with "cannot create symbolic link ... No such file or directory" and takes the
+# whole build down with it. Materialising it as a regular file costs nothing (nothing in
+# the build reads .eslintignore) and makes the checkout copyable on every platform.
+git clone -c core.symlinks=false --filter=blob:none --sparse "$UPSTREAM_REPO" "$WORK/moeflow"
 git -C "$WORK/moeflow" sparse-checkout set frontend-v1
 git -C "$WORK/moeflow" checkout "$UPSTREAM_SHA"
 
