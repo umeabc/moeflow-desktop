@@ -258,12 +258,14 @@ export function DesktopDock() {
         </div>
 
         {progress && busy && (
-          <Progress
-            percent={Math.round(progress.progress * 100)}
-            size="small"
-            status="active"
-            format={() => progress.stage}
-          />
+          <div className="mf-dock__progress" title={progress.stage}>
+            <Progress
+              percent={Math.round(progress.progress * 100)}
+              size="small"
+              status="active"
+              format={(percent) => `${percent ?? 0}% · ${progress.stage}`}
+            />
+          </div>
         )}
 
         {error && (

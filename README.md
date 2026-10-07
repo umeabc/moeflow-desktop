@@ -1,6 +1,13 @@
-# MoeFlow 桌面客户端（Windows）
+# MoeFlow 桌面客户端
 
-把 [moeflow-com/moeflow](https://github.com/moeflow-com/moeflow) 的 `frontend-v1` 前端打包成原生 Windows 应用：Tauri v2 + 系统 WebView2，内置本地反向代理、图片磁盘缓存，以及**在客户端本地完成**的 LabelPlus txt / 成品 zip 导出。
+把 [moeflow-com/moeflow](https://github.com/moeflow-com/moeflow) 的 `frontend-v1` 前端打包成原生桌面应用：Tauri v2 + 系统 WebView，内置本地反向代理、图片磁盘缓存，以及**在客户端本地完成**的 LabelPlus txt / 成品 zip 导出。
+
+支持 **Windows / macOS / Linux**。Windows 是当前主要验证目标，macOS 与 Linux 的打包目标已配好（见「构建」）。
+
+> **Android 版在 [`android/`](android/README.md)。** 它不是这个客户端打包到移动端，而是一次重新实现：
+> 那边是 **Kotlin + 原生 WebView 的套壳浏览器**，直接加载站点 URL，因此**没有**本地反代、图片磁盘缓存与本地导出
+> —— 上游前端本来就带 `viewport-fit=cover` 的移动端 viewport，而那些能力之所以在这里存在，正是因为这里加载的是
+> 打包进安装包的前端产物。两边的预置站点表共用一份定义，接口契约见 [`docs/android-port-contract.md`](docs/android-port-contract.md)。
 
 ## 它是怎么工作的
 
@@ -44,11 +51,11 @@ GET  /               →  同 launcher.html
 
 设置页与实例选择页**各自独立于档位服务器**：当前实例连不上时它们照样能打开。
 
-**每个服务器档位绑定各自的固定端口。** `token` cookie 按 origin 隔离，端口不同 → 切换服务器时登录态天然隔离，不会串号（端口变了也会导致登录态丢失，所以端口是持久化的）。
+**每个服务器档位绑定各自的固定端口。** 端口参与 origin，固定端口避免 origin 级存储在编辑配置时被换掉。注意普通 HTTP cookie 按 host/path 匹配，端口不隔离 cookie；不能把不同 `127.0.0.1` 端口视为完整的会话隔离保证。
 
 ### 端口只分配一次，永不重排
 
-端口是 origin 的一部分，而登录 cookie 绑在 origin 上——所以**端口一变动，那个实例就等于被登出了**，而且是静默的、看起来像「明明勾了记住还要重新登录」。
+端口是 origin 的一部分，变化会让 origin 级存储与页面上下文变成另一份。运行时应保持端口稳定，不能因为保存配置而更换。
 
 由此有一条硬性规矩：**运行时不要探测端口是否空闲**。`ensure_ports()` 曾经带一个 `port_is_free()` 判断，而 `upsert_profile()` 会在**自己的环路服务器正监听这些端口**的时候调用它——于是每个已存在的档位都显得「被占用」，全被换到新端口。症状就是：**加一个新实例，其他所有实例的登录一起失效**。
 
@@ -84,6 +91,22 @@ GET  /               →  同 launcher.html
 「选择服务器」曾经就是点一行，而那个 handler 直接调了 `set_active_profile`——它会**把主窗口弹出来并盖住设置视图**。想编辑一台服务器，结果应用跳到面前，这就是「异常导致打开窗口」。
 
 现在职责拆开了：点行 = 填表单（并给该行加蓝框），右侧显示「当前使用」徽标的是**正在用的那台**——两者必须长得不一样，否则「点行选它编辑」和「点行切到它」就分不清。真正切换实例要用明确的「连接到此实例」按钮。
+
+## 0.1.1：保存服务器与代理设置
+
+保存服务器时曾从异步 IPC 内调用 `restart_servers()`，再次进入 Tokio `block_on`，触发 `Cannot start a runtime from within a runtime`。release 配置是 `panic = "abort"`，所以用户看到的是立即闪退。保存现在使用异步增量更新：已有实例复用监听器，新实例才绑定端口，删除仅关闭对应实例；磁盘保存或绑定失败会显示错误，保留原有配置和服务。
+
+设置页的「代理设置」对所有实例生效，旧配置升级后默认选择系统代理：
+
+| 选项 | 行为 |
+|---|---|
+| 直接连接 | 禁用自动代理，即便环境变量中存在代理也直接连接 |
+| 使用系统代理（默认） | 使用环境变量和 Windows 静态系统代理及绕过规则 |
+| 手动添加 HTTP 代理 | 填入 `http://127.0.0.1:7890` 这样的 HTTP 地址，HTTP 请求转发、HTTPS 请求通过 CONNECT |
+
+点「应用代理设置」后，新请求立即采用新配置，进行中的传输继续完成；设置会保存并在重启后恢复。不改变本机 Windows 代理，也不重新分配实例端口。本地环路地址（localhost、127.0.0.0/8、::1）始终直连；跨公网/环路边界的 HTTP 重定向停止自动跟随，避免换用错误的代理路径。
+
+范围：客户端 Rust 管理的 API 请求/上传、图片、原生下载、本地导出、PS 脚本和地址探测。系统浏览器外链，以及上游网页直接发往第三方的 AI 请求等，仍使用各自浏览器网络配置。系统模式支持静态代理；依赖库不执行 PAC/WPAD，协议分别配置的 Windows 代理字符串也可能不适用，此时可填写手动 HTTP 地址。
 
 ## 服务器预设
 
@@ -139,7 +162,7 @@ GET  /               →  同 launcher.html
 
 过期的令牌也会自愈：首次 401 会清掉 token，守卫随即重定向到登录页。
 
-**每个实例使用独立的本地端口**，这不是随手为之：会话令牌存在按 origin 隔离的 cookie 里，端口不同 → 切换实例时登录态天然隔离，绝不会把 A 站的登录态带给 B 站。
+**每个实例使用独立且持久化的本地端口**，以保留稳定的前端 origin。普通 cookie 不按端口隔离，跨站切换仍需留意当前登录账户。
 
 ## 支持的服务器
 
@@ -158,18 +181,66 @@ GET  /               →  同 launcher.html
 
 ## 构建
 
-前置：Node 18+、Rust stable（MSVC 工具链）、VS Build Tools 的 C++ 工作负载、WebView2 运行时（Win11 自带）。
+### 打包目标按平台拆开
+
+`src-tauri/tauri.conf.json` 只保留全平台共用的部分；**打包目标写在平台专属配置里**——Tauri v2 会按当前平台把它合并进来（对象逐键合并，数组整体替换）：
+
+| 文件 | `bundle.targets` | 备注 |
+|---|---|---|
+| `tauri.windows.conf.json` | `nsis` | `webviewInstallMode: embedBootstrapper` 也在这里 |
+| `tauri.macos.conf.json` | `app`、`dmg` | `minimumSystemVersion: 10.15` |
+| `tauri.linux.conf.json` | `deb`、`rpm`、`appimage` | |
+
+基础配置写 `"all"` 而不是某个平台的目标名：万一平台文件缺失，该平台会退回构建**自己的**默认目标，而不是拿另一个平台的目标去报「不支持」。
+
+### 各平台前置
+
+| 平台 | 需要 |
+|---|---|
+| Windows | Node 18+、Rust stable（MSVC 工具链）、VS Build Tools 的 C++ 工作负载、WebView2 运行时（Win11 自带） |
+| macOS | Node 18+、Rust stable、Xcode（或 `xcode-select --install`）。**只能从 macOS 本机构建** |
+| Linux | Node 18+、Rust stable、`libwebkit2gtk-4.1-dev`、`libayatana-appindicator3-dev`、`librsvg2-dev`、`libxdo-dev`、`patchelf`；构建 rpm 还需 `rpm` |
 
 ```bash
-bash scripts/fetch-frontend.sh    # 拉取并锁定上游前端（含基线 git 仓库）
+bash scripts/fetch-frontend.sh    # 拉取并锁定上游前端（含基线 git 仓库）—— 平台无关
 npm install
 npm run build:frontend            # npm ci → build:locale → vite build，并校验产物
-npm run icons                     # 从 logo512.png 生成 .ico / png 全套
+npm run icons                     # 从 logo512.png 生成 .ico / .icns / png 全套（图标已提交，通常不必跑）
 npm run test:rust                 # 纯逻辑单元测试（浮点格式化、LabelPlus、排序、缓存…）
-npm run build                     # tauri build → NSIS 安装包
+npm run build                     # tauri build → 当前平台的安装包
 ```
 
-产物：`src-tauri/target/release/bundle/nsis/MoeFlow_0.1.0_x64-setup.exe`（约 6.8 MB）
+产出一律落在 `src-tauri/target/release/bundle/<目标>/`：
+
+| 平台 | 产物 |
+|---|---|
+| Windows | `nsis/MoeFlow_0.1.1_x64-setup.exe`（约 6.8 MB） |
+| macOS | `dmg/MoeFlow_0.1.1_<arch>.dmg`，以及 `macos/MoeFlow.app` |
+| Linux | `deb/*.deb`、`rpm/*.rpm`、`appimage/*.AppImage` |
+
+前端构建与图标生成都是纯 Node，平台无关；`fetch-frontend.sh` / `build-frontend.sh` 是 bash，Windows 上走 Git Bash。
+
+只想要其中一个目标时用 `--bundles`，比改配置干净：
+
+```bash
+npx tauri build --bundles appimage                 # 只要 AppImage
+npx tauri build --target universal-apple-darwin    # Intel + Apple Silicon 通用二进制
+```
+
+### macOS
+
+- **本机只能从 macOS 构建**（需要 Xcode）。CI 里的 `macos-latest` 就是为了绕开这一点——见 `.github/workflows/build.yml`。
+- 分发需要**代码签名 + 公证**，否则 Gatekeeper 会直接拦下。CI 默认只出**未签名**包，够本机/内测验证；要正式分发，把 Apple 证书与 `notarytool` 凭据放进仓库 Secrets（`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID`），再接到 workflow 的 `env` 上。
+- 未签名的 `.app` 本机自用可以右键「打开」绕过一次 Gatekeeper。
+- 通用二进制要两个 Rust target 都在：`rustup target add aarch64-apple-darwin x86_64-apple-darwin`。
+
+### Linux
+
+- 运行依赖 `libwebkit2gtk-4.1`（WebView）。**AppImage 不打包它**——目标机器仍需装有这个库。这是 Tauri 在 Linux 上的固有约束，不是本项目能配置掉的。
+- `.deb` 的依赖由 Tauri 在构建时探测生成，一般不必手写。
+- **托盘需要 AppIndicator**：`libayatana-appindicator3` 外加一个真正实现了 StatusNotifierItem 的桌面环境。默认 GNOME 两者都不提供，此时托盘创建会失败——应用**跳过托盘继续启动**（`main.rs` 里 `build_tray` 的失败现在只记日志，不再用 `?` 上抛）。此处曾经是 `build_tray(&handle)?`，症状是「装完一打开就闪退，连窗口都没有」。
+
+### Windows 专有事项
 
 MSVC 环境：若 `link.exe` 找不到库，用 `scripts/msvc-env.sh` 设置 `LIB`/`INCLUDE`（本机把工具链装在 `C:\BuildTools`，非默认路径，`vcvars64.bat` 也慢）。
 
@@ -196,6 +267,16 @@ $TEMP\MicrosoftEdgeWebview2Setup.exe  1.8 MB  WebView2 引导程序
 `web\` 是随包资源，运行时由 `web_root()` 通过 `app.path().resource_dir()` 定位；**找不到时才会退回到编译期写死的仓库路径**——那个路径在别人机器上不存在，所以这个回退只在开发机上有效。装完后要验的就是它：把仓库里的 `frontend/build` 临时改名，再从别处跑安装出来的 exe，若仍能打开登录页，说明资源定位是对的。
 
 ### 调试
+
+`scripts/settings-smoke.mjs` 用真实 DOM 执行设置页脚本并给 IPC 提供桩：`bun -i scripts/settings-smoke.mjs`，验证代理单选、输入校验、保存错误和重复提交防护。
+
+### ⚠️ 测试程序需要 Common Controls v6 清单
+
+`npm run test:rust` 走的是 `scripts/run-rust-tests.mjs`，不是裸 `cargo test`。
+
+取图/下载路径会用到 `TaskDialogIndirect`，而它只有 comctl32.dll 的 **v6（并行）版本**才导出。正式程序由 Tauri 内嵌清单，所以没问题；但 `cargo test` 生成的是另一次链接、自己没有清单，Windows 于是加载 comctl32 v5，进程在跑任何测试之前就以 `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` 退出——看起来像测试全挂，其实只是缺一个清单。cargo 的 `rustc-link-arg-tests` 覆盖不到 lib 单元测试，所以脚本先 `--no-run` 拿到各个测试程序的路径，给它们各写一份同名 `.manifest` 边车文件（没有内嵌清单的可执行文件会读它），再逐个执行。**正式二进制不受影响**：在那里再嵌一份清单会和 Tauri 自带的资源冲突。
+
+运行时验证可设置 `MOEFLOW_TEST_ROOT=<临时目录>`，程序将配置、缓存及 WebView 数据放在该目录下；不设置则正常使用用户目录。同时设置 `MOEFLOW_TEST_CDP_PORT=<端口>` 可配合本地 CDP 验证真实 IPC 与进程存活（仅在 `MOEFLOW_TEST_ROOT` 已设置时启用）；`bun scripts/runtime-smoke.mjs` 自动建立隔离环境并运行这些检查。只用于本机调试，测试不改变 Windows 系统代理。
 
 单独跑 `cargo build` 出来的二进制时，Tauri 认为自己在 dev 模式（`cfg(dev)` 是 `!custom-protocol`，而 `custom-protocol` 只有 `tauri build` 才会打开）。想看前端控制台：
 
@@ -304,6 +385,10 @@ overlay/           叠加在上游之上的桌面集成（仅新增文件）
 patches/           给前端的补丁 + 给后端的 show_blank 修复
 scripts/           vendor / 构建 / MSVC 环境 / 窗口截图诊断
 src-tauri/
+  tauri.conf.json            全平台共用配置（打包目标写 `"all"`）
+  tauri.windows.conf.json    Windows 覆盖：nsis + WebView2 引导程序
+  tauri.macos.conf.json      macOS 覆盖：app、dmg
+  tauri.linux.conf.json      Linux 覆盖：deb、rpm、appimage
   src/
     pyfloat.rs     Python 兼容的浮点 repr
     labelplus.rs   LabelPlus txt 生成

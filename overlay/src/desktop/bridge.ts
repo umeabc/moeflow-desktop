@@ -111,7 +111,14 @@ export interface CacheStats {
   limit_bytes: number;
 }
 
+export interface ProxySettings {
+  mode: 'direct' | 'system' | 'manual';
+  url: string;
+}
+
 export interface BootPayload {
+  version: string;
+  proxy: ProxySettings;
   profiles: Profile[];
   active: string;
   active_port: number;

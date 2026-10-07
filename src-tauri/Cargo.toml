@@ -1,6 +1,6 @@
 [package]
 name = "moeflow-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "MoeFlow desktop client"
 authors = ["moeflow-desktop"]
 edition = "2021"
@@ -39,6 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "http2",
     "charset",
+    "system-proxy",
 ] }
 
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -49,7 +50,7 @@ thiserror = "2"
 percent-encoding = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Storage_FileSystem"] }
 
 [profile.release]
 opt-level = "s"

@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::network::{NetworkClient, SharedClients};
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
@@ -24,7 +25,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
 use futures_util::{StreamExt, TryStreamExt};
-use tokio::sync::RwLock;
+use std::sync::RwLock;
 use tokio_util::io::ReaderStream;
 
 use crate::media::MediaCache;
@@ -46,17 +47,26 @@ const HOP_BY_HOP: &[&str] = &[
 /// Headers we let reqwest negotiate itself, plus any we must recompute after rewriting.
 const REQUEST_HEADERS_TO_DROP: &[&str] = &["host", "content-length", "accept-encoding"];
 
+struct LiveProfile {
+    profile: Profile,
+    known_origins: Vec<String>,
+    generation: u64,
+}
+
+pub struct RequestSnapshot {
+    pub profile: Profile,
+    pub client: NetworkClient,
+    pub(crate) known_origins: Vec<String>,
+    generation: u64,
+}
+
 pub struct Ctx {
-    /// Live profile so edits apply without restarting the listener.
-    pub profile: RwLock<Profile>,
+    live: RwLock<LiveProfile>,
     pub web_root: PathBuf,
     pub cache: Arc<MediaCache>,
-    pub app: tauri::AppHandle,
-    /// Origins whose absolute URLs should be routed through `/__media`.
-    pub known_origins: RwLock<Vec<String>>,
-    /// Prebuilt so the connection pool is shared; `reqwest::Client` is cheap to clone.
-    client_strict: reqwest::Client,
-    client_permissive: reqwest::Client,
+    pub app: Option<tauri::AppHandle>,
+    clients: SharedClients,
+    publication: Arc<RwLock<()>>,
 }
 
 impl Ctx {
@@ -64,41 +74,59 @@ impl Ctx {
         profile: Profile,
         web_root: PathBuf,
         cache: Arc<MediaCache>,
-        app: tauri::AppHandle,
+        app: Option<tauri::AppHandle>,
+        clients: SharedClients,
+        publication: Arc<RwLock<()>>,
     ) -> Self {
-        let known_origins = profile.media_origins.clone();
         Self {
-            profile: RwLock::new(profile),
+            live: RwLock::new(LiveProfile {
+                known_origins: profile.media_origins.clone(),
+                profile,
+                generation: 0,
+            }),
             web_root,
             cache,
             app,
-            known_origins: RwLock::new(known_origins),
-            client_strict: crate::http_client(false),
-            client_permissive: crate::http_client(true),
+            clients,
+            publication,
         }
     }
 
-    pub fn client_for(&self, allow_invalid_certs: bool) -> reqwest::Client {
-        if allow_invalid_certs {
-            self.client_permissive.clone()
-        } else {
-            self.client_strict.clone()
+    /// All locks are short and synchronous; none survives a network await. Publishing a
+    /// proxy change swaps one shared Arc, so requests already started keep their pools.
+    pub fn snapshot(&self) -> RequestSnapshot {
+        let _publication = self.publication.read().unwrap_or_else(|p| p.into_inner());
+        let live = self.live.read().unwrap_or_else(|p| p.into_inner());
+        let bundle = self.clients.read().unwrap_or_else(|p| p.into_inner());
+        RequestSnapshot {
+            profile: live.profile.clone(),
+            client: bundle.client(live.profile.allow_invalid_certs),
+            known_origins: live.known_origins.clone(),
+            generation: live.generation,
         }
     }
 
-    pub async fn profile_snapshot(&self) -> Profile {
-        self.profile.read().await.clone()
+    pub fn update_profile(&self, profile: Profile) {
+        let mut live = self.live.write().unwrap_or_else(|p| p.into_inner());
+        if live.profile.api_base != profile.api_base
+            || live.profile.site_url != profile.site_url
+            || live.profile.allow_invalid_certs != profile.allow_invalid_certs
+            || live.profile.media_origins != profile.media_origins
+        {
+            live.generation += 1;
+            live.known_origins = profile.media_origins.clone();
+        }
+        live.profile = profile;
     }
 
-    /// Record origins discovered in API responses so later responses get rewritten too.
-    pub async fn learn_origins(&self, origins: &[String]) {
-        if origins.is_empty() {
+    pub fn learn_origins(&self, snapshot: &RequestSnapshot, origins: &[String]) {
+        let mut live = self.live.write().unwrap_or_else(|p| p.into_inner());
+        if live.generation != snapshot.generation {
             return;
         }
-        let mut known = self.known_origins.write().await;
         for origin in origins {
-            if !known.iter().any(|o| o == origin) {
-                known.push(origin.clone());
+            if !live.known_origins.contains(origin) {
+                live.known_origins.push(origin.clone());
             }
         }
     }
@@ -137,13 +165,16 @@ async fn ps_script(State(ctx): State<Arc<Ctx>>) -> Response {
         }
     };
 
-    let Some(destination) = crate::download::ask_save_path(&ctx.app, PS_SCRIPT_FILENAME) else {
+    let Some(app) = ctx.app.as_ref() else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "保存对话框不可用");
+    };
+    let Some(destination) = crate::download::ask_save_path(app, PS_SCRIPT_FILENAME) else {
         return (StatusCode::NO_CONTENT, "").into_response();
     };
 
     match tokio::fs::copy(&cached, &destination).await {
         Ok(bytes) => {
-            crate::download::announce(&ctx.app, &destination, bytes);
+            crate::download::announce(app, &destination, bytes);
             (
                 [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
                 "<!doctype html><meta charset=\"utf-8\"><title>已保存</title>\
@@ -170,8 +201,8 @@ async fn fetch_through_cache(
         return Ok(path);
     }
 
-    let profile = ctx.profile_snapshot().await;
-    let client = ctx.client_for(profile.allow_invalid_certs);
+    let snapshot = ctx.snapshot();
+    let client = &snapshot.client;
     let response = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
@@ -205,6 +236,14 @@ pub async fn bind(
 ) -> std::io::Result<(u16, tokio::sync::oneshot::Sender<()>)> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let bound = listener.local_addr()?.port();
+    let tx = serve_listener(ctx, listener);
+    Ok((bound, tx))
+}
+
+pub fn serve_listener(
+    ctx: Arc<Ctx>,
+    listener: tokio::net::TcpListener,
+) -> tokio::sync::oneshot::Sender<()> {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let app = router(ctx);
 
@@ -216,7 +255,7 @@ pub async fn bind(
             .await;
     });
 
-    Ok((bound, tx))
+    tx
 }
 
 /// The frontend fetches this at startup and lets it override the build-time API base.
@@ -240,7 +279,8 @@ async fn api_proxy(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let profile = ctx.profile_snapshot().await;
+    let snapshot = ctx.snapshot();
+    let profile = &snapshot.profile;
 
     let mut target = format!("{}/{}", profile.api_base.trim_end_matches('/'), rest);
     if let Some(query) = uri.query() {
@@ -248,7 +288,7 @@ async fn api_proxy(
         target.push_str(query);
     }
 
-    let client = ctx.client_for(profile.allow_invalid_certs);
+    let client = &snapshot.client;
     let mut request = client.request(method.clone(), &target);
 
     for (name, value) in headers.iter() {
@@ -267,10 +307,7 @@ async fn api_proxy(
     let upstream = match request.send().await {
         Ok(response) => response,
         Err(err) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("无法连接服务器：{err}"),
-            )
+            return error_response(StatusCode::BAD_GATEWAY, &format!("无法连接服务器：{err}"))
         }
     };
 
@@ -303,7 +340,7 @@ async fn api_proxy(
             }
         };
 
-        let known = ctx.known_origins.read().await.clone();
+        let known = &snapshot.known_origins;
         let site_origin = profile.site_origin();
         let payload = match rewrite_api_json(&bytes, &known, &site_origin) {
             Some((rewritten, outcome)) => {
@@ -312,7 +349,7 @@ async fn api_proxy(
                         eprintln!("[moeflow] media rewritten: {url}");
                     }
                 }
-                ctx.learn_origins(&outcome.learned_origins).await;
+                ctx.learn_origins(&snapshot, &outcome.learned_origins);
                 rewritten
             }
             None => bytes.to_vec(),
@@ -356,8 +393,9 @@ async fn media(
         }
     }
 
-    let profile = ctx.profile_snapshot().await;
-    let client = ctx.client_for(profile.allow_invalid_certs);
+    let snapshot = ctx.snapshot();
+    let profile = &snapshot.profile;
+    let client = &snapshot.client;
 
     // An origin-relative URL was pinned to the site origin, but on a split deployment the
     // storage may actually live elsewhere. Try the configured origins before giving up.
@@ -365,7 +403,11 @@ async fn media(
     let mut candidates = vec![upstream_url.clone()];
     if origin == profile.site_origin() {
         for alternate in &profile.media_origins {
-            candidates.push(format!("{}{}", alternate.trim_end_matches('/'), format!("/{rest}")));
+            candidates.push(format!(
+                "{}{}",
+                alternate.trim_end_matches('/'),
+                format!("/{rest}")
+            ));
         }
     }
 
@@ -427,7 +469,10 @@ async fn media(
     let mut file = match tokio::fs::File::create(&temp).await {
         Ok(file) => file,
         Err(err) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("建临时文件失败：{err}"))
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("建临时文件失败：{err}"),
+            )
         }
     };
 
@@ -456,7 +501,10 @@ async fn media(
         Ok(path) => serve_cached(&path, &upstream_url, etag).await,
         Err(err) => {
             ctx.cache.discard_temp(&temp);
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("缓存提交失败：{err}"))
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("缓存提交失败：{err}"),
+            )
         }
     }
 }
@@ -542,14 +590,17 @@ async fn download(
 
     let suggested = filename_from_url(&upstream_url);
 
-    let Some(destination) = crate::download::ask_save_path(&ctx.app, &suggested) else {
+    let Some(app) = ctx.app.as_ref() else {
+        return error_response(StatusCode::SERVICE_UNAVAILABLE, "保存对话框不可用");
+    };
+    let Some(destination) = crate::download::ask_save_path(app, &suggested) else {
         // User cancelled — report plainly rather than surfacing a transport error.
         return (StatusCode::NO_CONTENT, "").into_response();
     };
 
     match crate::download::fetch_to_file(&ctx, &upstream_url, &destination).await {
         Ok(bytes) => {
-            crate::download::announce(&ctx.app, &destination, bytes);
+            crate::download::announce(app, &destination, bytes);
             let name = destination
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -566,10 +617,7 @@ async fn download(
             )
                 .into_response()
         }
-        Err(err) => error_response(
-            StatusCode::BAD_GATEWAY,
-            &format!("下载失败：{err}"),
-        ),
+        Err(err) => error_response(StatusCode::BAD_GATEWAY, &format!("下载失败：{err}")),
     }
 }
 
@@ -639,8 +687,8 @@ async fn static_file(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {
 
 /// Extensions that mean "this was a request for a file, not a client-side route".
 const ASSET_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "ico", "css", "js", "mjs",
-    "map", "ttf", "otf", "woff", "woff2", "mp4", "webm", "mp3", "txt", "zip", "pdf",
+    "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "svg", "ico", "css", "js", "mjs", "map",
+    "ttf", "otf", "woff", "woff2", "mp4", "webm", "mp3", "txt", "zip", "pdf",
 ];
 
 fn looks_like_asset(path: &str) -> bool {
@@ -649,7 +697,9 @@ fn looks_like_asset(path: &str) -> bool {
             !stem.is_empty()
                 && !ext.is_empty()
                 && !ext.contains('/')
-                && ASSET_EXTENSIONS.iter().any(|known| known.eq_ignore_ascii_case(ext))
+                && ASSET_EXTENSIONS
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(ext))
         }
         None => false,
     }
@@ -707,9 +757,10 @@ async fn serve_path(path: &std::path::Path, no_cache: bool) -> Response {
     } else {
         "public, max-age=31536000, immutable"
     };
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static(cache_control));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control),
+    );
     response
 }
 
@@ -768,8 +819,10 @@ mod tests {
 
     #[test]
     fn join_origin_rebuilds_the_upstream_url() {
-        let token =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, "https://cdn.test");
+        let token = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            "https://cdn.test",
+        );
         assert_eq!(
             join_origin(&token, "a/b.png", Some("v=2")).unwrap(),
             "https://cdn.test/a/b.png?v=2"
@@ -790,7 +843,10 @@ mod tests {
     fn asset_paths_are_recognised() {
         assert!(looks_like_asset("storage/2026/01/abc.png"));
         assert!(looks_like_asset("assets/index-abc.js"));
-        assert!(looks_like_asset("a.PNG"), "extension match is case-insensitive");
+        assert!(
+            looks_like_asset("a.PNG"),
+            "extension match is case-insensitive"
+        );
     }
 
     /// Client-side routes must keep falling through to the SPA shell.
@@ -808,7 +864,9 @@ mod tests {
     #[test]
     fn real_image_responses_are_accepted() {
         assert!(content_type_is_usable_as_media("image/png"));
-        assert!(content_type_is_usable_as_media("image/jpeg; charset=binary"));
+        assert!(content_type_is_usable_as_media(
+            "image/jpeg; charset=binary"
+        ));
         assert!(content_type_is_usable_as_media("image/webp"));
         // Object stores commonly hand out images without a useful type. Refusing these
         // would break deployments that work today, so only HTML is rejected outright.
@@ -819,7 +877,9 @@ mod tests {
     #[test]
     fn routes_are_not_mistaken_for_assets() {
         assert!(!looks_like_asset("dashboard/projects"));
-        assert!(!looks_like_asset("projects/6a0a1e2c-0000-0000-0000-000000000000"));
+        assert!(!looks_like_asset(
+            "projects/6a0a1e2c-0000-0000-0000-000000000000"
+        ));
         assert!(!looks_like_asset("teams/abc/workbench"));
         // A dotted directory must not make the last segment look like a file.
         assert!(!looks_like_asset("v1.2/dashboard"));
@@ -827,8 +887,14 @@ mod tests {
 
     #[test]
     fn plain_paths_pass_through() {
-        assert_eq!(safe_relative_path("assets/index-abc.js").unwrap(), "assets/index-abc.js");
-        assert_eq!(safe_relative_path("static/favicon.png").unwrap(), "static/favicon.png");
+        assert_eq!(
+            safe_relative_path("assets/index-abc.js").unwrap(),
+            "assets/index-abc.js"
+        );
+        assert_eq!(
+            safe_relative_path("static/favicon.png").unwrap(),
+            "static/favicon.png"
+        );
     }
 
     /// Percent-encoded names must be decoded, or non-ASCII assets would 404.

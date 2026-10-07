@@ -1,9 +1,8 @@
 // Hide the console window in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -14,7 +13,7 @@ use moeflow_desktop_lib::commands::AppState;
 use moeflow_desktop_lib::media::MediaCache;
 use moeflow_desktop_lib::profiles::ProfileStore;
 use moeflow_desktop_lib::{
-    active_port, navigate_main, open_launcher, open_shell, restart_servers, skip_launcher,
+    active_port, ensure_shell_window, navigate_main, open_launcher, open_shell, skip_launcher,
 };
 
 /// How often the media cache index is written out.
@@ -49,18 +48,31 @@ fn main() {
             moeflow_desktop_lib::commands::open_settings,
             moeflow_desktop_lib::commands::open_launcher,
             moeflow_desktop_lib::commands::set_skip_launcher,
+            moeflow_desktop_lib::commands::set_proxy_settings,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
 
-            let config_dir = handle
-                .path()
-                .app_config_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            let cache_dir = handle
-                .path()
-                .app_cache_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
+            // An opt-in test root keeps runtime smoke checks away from user profiles and cache.
+            let test_root = std::env::var_os("MOEFLOW_TEST_ROOT").map(PathBuf::from);
+            let config_dir = test_root
+                .as_ref()
+                .map(|root| root.join("config"))
+                .unwrap_or_else(|| {
+                    handle
+                        .path()
+                        .app_config_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                });
+            let cache_dir = test_root
+                .as_ref()
+                .map(|root| root.join("cache"))
+                .unwrap_or_else(|| {
+                    handle
+                        .path()
+                        .app_cache_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                })
                 .join("media");
 
             let mut store = ProfileStore::load(&config_dir);
@@ -73,25 +85,30 @@ fn main() {
             // Serve the instance picker and settings pages ourselves rather than through
             // Tauri's `tauri://` asset protocol — see `shell.rs` for why. Port 0 lets the OS
             // pick; the windows are pointed at whatever we get back.
-            let shell_port = match tauri::async_runtime::block_on(moeflow_desktop_lib::shell::bind(0))
-            {
-                Ok(port) => port,
-                Err(err) => {
-                    // Not fatal: `shell_url` falls back to the asset protocol.
-                    eprintln!("[moeflow] could not bind the shell server: {err}");
-                    0
-                }
-            };
+            let shell_port =
+                match tauri::async_runtime::block_on(moeflow_desktop_lib::shell::bind(0)) {
+                    Ok(port) => port,
+                    Err(err) => {
+                        // Not fatal: `shell_url` falls back to the asset protocol.
+                        eprintln!("[moeflow] could not bind the shell server: {err}");
+                        0
+                    }
+                };
 
-            app.manage(AppState {
+            let state = AppState::new(
                 config_dir,
-                store: Mutex::new(store),
-                cache: Arc::new(MediaCache::new(cache_dir, cache_limit)),
-                servers: Mutex::new(HashMap::new()),
+                store,
+                Arc::new(MediaCache::new(cache_dir, cache_limit)),
                 shell_port,
-            });
+            )
+            .map_err(std::io::Error::other)?;
+            app.manage(state);
 
-            restart_servers(&handle);
+            tauri::async_runtime::block_on(
+                app.state::<AppState>()
+                    .start_servers(Some(handle.clone()), moeflow_desktop_lib::web_root(&handle)),
+            )
+            .map_err(std::io::Error::other)?;
 
             // Persist the media cache index on a timer. `flush` is a no-op unless something
             // changed, so this is a cheap tick rather than a periodic rewrite.
@@ -106,13 +123,26 @@ fn main() {
                 }
             });
 
-            // First run shows the instance picker; only an explicit opt-in skips it.
+            // The shell is always created during setup. Only its initial visibility depends on
+            // the preference; later settings/instance clicks can therefore never create a
+            // WebView from an IPC command.
             let skip = skip_launcher(&handle);
             build_main_window(&handle, skip)?;
-            if !skip {
-                open_launcher(&handle);
+            ensure_shell_window(&handle, !skip)?;
+
+            // The tray is a convenience, not a prerequisite, and it is the one piece of
+            // this app that a Linux desktop can simply not provide. `tray-icon` needs an
+            // AppIndicator host: libayatana-appindicator3 plus a desktop that actually
+            // implements StatusNotifierItem. Stock GNOME ships neither — so on a perfectly
+            // healthy Ubuntu box `build()` returns Err.
+            //
+            // Propagating that with `?` aborts `setup()`, and the user is left with a
+            // process that dies before showing a single window. Both windows work without
+            // a tray, so degrade instead: log and carry on. Windows and macOS are
+            // unaffected — a failure there is equally non-fatal, just far less likely.
+            if let Err(err) = build_tray(&handle) {
+                eprintln!("[moeflow] tray unavailable, continuing without one: {err}");
             }
-            build_tray(&handle)?;
 
             Ok(())
         })
@@ -121,7 +151,10 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    let window = window.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = window.hide();
+                    });
                 }
             }
         })
@@ -158,16 +191,33 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     let port = active_port(app);
     // See `MAIN_ENTRY_PATH`: a protected route lands on /login when signed out and in the
     // app when signed in, instead of showing the site's public homepage.
-    let url = format!("http://127.0.0.1:{port}{}", moeflow_desktop_lib::MAIN_ENTRY_PATH)
-        .parse()
-        .unwrap_or_else(|_| "about:blank".parse().unwrap());
+    let url = format!(
+        "http://127.0.0.1:{port}{}",
+        moeflow_desktop_lib::MAIN_ENTRY_PATH
+    )
+    .parse()
+    .unwrap_or_else(|_| "about:blank".parse().unwrap());
 
-    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("MoeFlow")
         .inner_size(1400.0, 900.0)
         .min_inner_size(960.0, 640.0)
-        .visible(visible)
-        .build()?;
+        .visible(visible);
+    let builder = if let Some(root) = std::env::var_os("MOEFLOW_TEST_ROOT") {
+        let builder = builder.data_directory(PathBuf::from(root).join("webview"));
+        if let Some(port) = std::env::var("MOEFLOW_TEST_CDP_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port != 0)
+        {
+            builder.additional_browser_args(&format!("--remote-debugging-port={port}"))
+        } else {
+            builder
+        }
+    } else {
+        builder
+    };
+    let window = builder.build()?;
 
     // Opt-in devtools. Debug builds have them available via right-click, but auto-opening
     // on every launch is intrusive, and the frontend runs from a remote origin whose

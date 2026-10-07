@@ -13,5 +13,8 @@
 .env
 .env.local
 
+# Local agent working notes — not part of the product.
+/.workbuddy/
+
 # Tauri regenerates these on every build.
 /src-tauri/gen/schemas/

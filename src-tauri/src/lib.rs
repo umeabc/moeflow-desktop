@@ -10,10 +10,12 @@
 //! `Authorization` header all behave normally.
 
 pub mod commands;
+pub mod config;
 pub mod download;
 pub mod exporter;
 pub mod labelplus;
 pub mod media;
+pub mod network;
 pub mod profiles;
 pub mod pyfloat;
 pub mod rewrite;
@@ -23,7 +25,6 @@ pub mod shell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -34,30 +35,7 @@ use server::Ctx;
 pub struct ServerHandle {
     pub port: u16,
     pub shutdown: Option<tokio::sync::oneshot::Sender<()>>,
-}
-
-/// Client used for API calls, uploads and image fetches.
-///
-/// The generous timeout is deliberate: project imports are large multipart bodies that can
-/// legitimately take minutes on a slow link.
-pub fn http_client(allow_invalid_certs: bool) -> reqwest::Client {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(allow_invalid_certs)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(600))
-        .pool_max_idle_per_host(8)
-        .build()
-        .expect("failed to build HTTP client")
-}
-
-/// Short-timeout client for connection probes, where a hung server must not stall the UI.
-pub fn probe_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(6))
-        .timeout(Duration::from_secs(10))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .expect("failed to build probe client")
+    pub ctx: Arc<Ctx>,
 }
 
 /// Where the bundled frontend lives.
@@ -75,59 +53,6 @@ pub fn web_root(app: &AppHandle) -> PathBuf {
         .join("../frontend/build")
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("../frontend/build"))
-}
-
-/// Rebind a loopback server for every profile.
-///
-/// Each profile gets its own port so the origin-scoped `token` cookie cannot leak between
-/// servers when the user switches.
-pub fn restart_servers(app: &AppHandle) {
-    let Some(state) = app.try_state::<AppState>() else {
-        return;
-    };
-
-    {
-        let mut servers = state.servers.lock().unwrap_or_else(|p| p.into_inner());
-        for (_, mut handle) in servers.drain() {
-            if let Some(shutdown) = handle.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-        }
-    }
-
-    let profiles = {
-        let store = state.store.lock().unwrap_or_else(|p| p.into_inner());
-        store.profiles.clone()
-    };
-
-    let root = web_root(app);
-    let mut servers = state.servers.lock().unwrap_or_else(|p| p.into_inner());
-
-    for profile in profiles {
-        let ctx = Arc::new(Ctx::new(
-            profile.clone(),
-            root.clone(),
-            state.cache.clone(),
-            app.clone(),
-        ));
-        match tauri::async_runtime::block_on(server::bind(ctx, profile.port)) {
-            Ok((port, shutdown)) => {
-                servers.insert(
-                    profile.id.clone(),
-                    ServerHandle {
-                        port,
-                        shutdown: Some(shutdown),
-                    },
-                );
-            }
-            Err(err) => {
-                eprintln!(
-                    "[moeflow] could not bind loopback server for {} on port {}: {err}",
-                    profile.id, profile.port
-                );
-            }
-        }
-    }
 }
 
 /// Whether the user asked to skip the instance picker on startup.
@@ -229,69 +154,90 @@ pub fn open_launcher(app: &AppHandle) {
 /// The view a shell window is showing, keyed by the file name it was loaded from.
 pub const SHELL_VIEWS: [&str; 2] = ["launcher.html", "settings.html"];
 
-/// Show the shell window, switching it to `page` if it is on the other view.
+/// Create the shell during setup, before any renderer can invoke an IPC command.
 ///
-/// **The window must only ever be created during `setup`.** Building a webview window from a
-/// synchronous `#[tauri::command]` deadlocks: sync commands run on the main thread, and
-/// `WebviewWindowBuilder::build` waits on the event loop that the command is itself holding.
-/// The HWND is created before the block, so the symptom is a window that appears with a
-/// correct title and size, paints nothing, and freezes the whole app.
-///
-/// Switching views is a plain navigation inside the already-working window, so it is safe
-/// from anywhere.
-pub fn open_shell(app: &AppHandle, page: &str) {
+/// This is intentionally the only function that calls `WebviewWindowBuilder::build`. A shell
+/// must exist even when the picker is hidden on startup; otherwise the first later "设置"
+/// click would try to create a WebView from a synchronous command and deadlock the event loop.
+pub fn ensure_shell_window(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     if let Some(existing) = app.get_webview_window("launcher") {
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        let _ = existing.set_focus();
-        // Only navigate when the view actually differs, so reopening does not throw away a
-        // half-filled form.
-        let on_page = existing
-            .url()
-            .ok()
-            .and_then(|url| url.path_segments().map(|s| s.last().unwrap_or("").to_string()))
-            .map(|last| last == page)
-            .unwrap_or(false);
-        if !on_page {
-            if let Ok(url) = shell_view_url(app, page).parse() {
-                let _ = existing.navigate(url);
-            }
+        if visible {
+            let _ = existing.show();
+        } else {
+            let _ = existing.hide();
         }
-        return;
+        return Ok(());
     }
 
     let app_for_events = app.clone();
-    let built = WebviewWindowBuilder::new(app, "launcher", shell_url(app, "launcher.html"))
+    let mut builder = WebviewWindowBuilder::new(app, "launcher", shell_url(app, "launcher.html"));
+    if let Some(root) = std::env::var_os("MOEFLOW_TEST_ROOT") {
+        builder = builder.data_directory(PathBuf::from(root).join("webview"));
+        if let Ok(port) = std::env::var("MOEFLOW_TEST_CDP_PORT")
+            .unwrap_or_default()
+            .parse::<u16>()
+        {
+            builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
+        }
+    }
+    let window = builder
         .title("MoeFlow")
         .inner_size(840.0, 680.0)
         .min_inner_size(680.0, 520.0)
         .resizable(true)
-        .build()
-        .map(|window| {
-            // Closing the shell without choosing should not leave the app in limbo: if the
-            // main window has never been shown, reveal it on the remembered instance.
-            let app = app_for_events;
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    let app = app.clone();
-                    // Deferred on purpose — see `reveal_main_if_hidden`. Window getters and
-                    // setters dispatch to the event loop and wait for it to answer, and this
-                    // callback *is* the event loop.
-                    tauri::async_runtime::spawn(async move {
-                        reveal_main_if_hidden(&app);
-                    });
-                }
-            });
-        });
+        .visible(visible)
+        .build()?;
 
-    // Never swallow this: if the shell cannot be created the app would otherwise start
-    // with no visible window at all. Fall back to showing the main window.
-    if let Err(err) = built {
-        eprintln!("[moeflow] could not open the shell window: {err}");
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.show();
+    // Closing the shell hides it instead of destroying the one safe-to-create WebView.
+    let window_for_events = window.clone();
+    let window_for_close = window.clone();
+    window_for_events.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let window = window_for_close.clone();
+            let app = app_for_events.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = window.hide();
+                reveal_main_if_hidden(&app);
+            });
         }
+    });
+    if !visible {
+        let _ = window.hide();
     }
+    Ok(())
+}
+
+/// Show the shell window, switching it to `page` if it is on the other view.
+///
+/// The window is created by `ensure_shell_window` during setup. This function only operates on
+/// that existing window, so it is safe for IPC and tray callers.
+pub fn open_shell(app: &AppHandle, page: &str) {
+    let app = app.clone();
+    let page = page.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(existing) = app.get_webview_window("launcher") else {
+            eprintln!("[moeflow] shell window was not created during setup");
+            return;
+        };
+        let _ = existing.show();
+        let _ = existing.unminimize();
+        let _ = existing.set_focus();
+        let on_page = existing
+            .url()
+            .ok()
+            .and_then(|url| {
+                url.path_segments()
+                    .map(|s| s.last().unwrap_or("").to_string())
+            })
+            .map(|last| last == page)
+            .unwrap_or(false);
+        if !on_page {
+            if let Ok(url) = shell_view_url(&app, &page).parse() {
+                let _ = existing.navigate(url);
+            }
+        }
+    });
 }
 
 /// Absolute URL of a shell view, for navigating the shell window between pages.

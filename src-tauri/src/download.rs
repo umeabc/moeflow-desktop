@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter};
+#[cfg(not(test))]
 use tauri_plugin_dialog::DialogExt;
 
 use crate::server::Ctx;
@@ -18,6 +19,7 @@ use crate::server::Ctx;
 ///
 /// Called from an axum worker thread, never the main thread — `blocking_save_file`
 /// dispatches to the main thread internally and would deadlock if called from it.
+#[cfg(not(test))]
 pub fn ask_save_path(app: &AppHandle, suggested: &str) -> Option<PathBuf> {
     app.dialog()
         .file()
@@ -26,10 +28,18 @@ pub fn ask_save_path(app: &AppHandle, suggested: &str) -> Option<PathBuf> {
         .and_then(|path| path.into_path().ok())
 }
 
+// The headless library harness has no native event loop or common-controls manifest.
+// Keep native dialogs out of its link graph; server tests pass an absent app handle.
+#[cfg(test)]
+pub fn ask_save_path(_app: &AppHandle, _suggested: &str) -> Option<PathBuf> {
+    None
+}
+
 /// Stream `url` into `destination`, emitting progress events for the UI.
 pub async fn fetch_to_file(ctx: &Ctx, url: &str, destination: &Path) -> Result<u64, String> {
-    let profile = ctx.profile_snapshot().await;
-    let client = ctx.client_for(profile.allow_invalid_certs);
+    let snapshot = ctx.snapshot();
+    let profile = &snapshot.profile;
+    let client = &snapshot.client;
 
     // Downloads come from the same object storage as images, so they face the same Referer
     // allowlist. See `Profile::media_referer`.
@@ -63,14 +73,16 @@ pub async fn fetch_to_file(ctx: &Ctx, url: &str, destination: &Path) -> Result<u
         // Throttle UI updates; a large export would otherwise flood the event loop.
         if last_emit.elapsed() > Duration::from_millis(200) {
             last_emit = std::time::Instant::now();
-            let _ = ctx.app.emit(
-                "download://progress",
-                serde_json::json!({
-                    "url": url,
-                    "written": written,
-                    "total": total,
-                }),
-            );
+            if let Some(app) = &ctx.app {
+                let _ = app.emit(
+                    "download://progress",
+                    serde_json::json!({
+                        "url": url,
+                        "written": written,
+                        "total": total,
+                    }),
+                );
+            }
         }
     }
     drop(file);

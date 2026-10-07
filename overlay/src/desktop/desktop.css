@@ -26,11 +26,17 @@
   border: 0;
   border-radius: 19px;
   background: transparent;
-  color: inherit;
+  color: #1f2328;
   font-size: 13px;
   font-family: inherit;
   cursor: pointer;
   transition: background 0.15s ease;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mf-dock__bar-button {
+    color: #f0f2f5;
+  }
 }
 
 .mf-dock__bar-button:hover {
@@ -120,4 +126,20 @@
   align-items: center;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* Ant Design's default progress formatter renders inside the bar. Keep long stage
+   descriptions inside the dialog instead of letting them widen the progress track. */
+.mf-dock__progress {
+  min-width: 0;
+}
+
+.mf-dock__progress .ant-progress-text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }

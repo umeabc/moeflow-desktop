@@ -107,6 +107,8 @@ impl Profile {
 pub struct ProfileStore {
     pub active: String,
     pub profiles: Vec<Profile>,
+    #[serde(default)]
+    pub proxy: crate::network::ProxySettings,
     #[serde(default = "default_cache_limit")]
     pub cache_limit_bytes: u64,
     /// Start straight in the remembered instance instead of showing the picker.
@@ -153,6 +155,7 @@ impl ProfileStore {
         Self {
             active: "moetran".into(),
             profiles,
+            proxy: crate::network::ProxySettings::default(),
             cache_limit_bytes: default_cache_limit(),
             skip_launcher: false,
         }
@@ -166,7 +169,10 @@ impl ProfileStore {
         let path = Self::path(dir);
         match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|err| {
-                eprintln!("[profiles] {} is unreadable ({err}); using presets", path.display());
+                eprintln!(
+                    "[profiles] {} is unreadable ({err}); using presets",
+                    path.display()
+                );
                 Self::with_presets()
             }),
             Err(_) => {
@@ -180,7 +186,21 @@ impl ProfileStore {
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let text = serde_json::to_string_pretty(self)?;
-        std::fs::write(Self::path(dir), text)
+        // Write a sibling first, then replace atomically. A failed write/replace leaves the
+        // last persisted configuration intact, matching the service's publish-after-save rule.
+        let temp = dir.join(format!("profiles.{}.tmp", std::process::id()));
+        let result = (|| {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp)?;
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            replace_file(&temp, &Self::path(dir))
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+        result
     }
 
     pub fn get(&self, id: &str) -> Option<&Profile> {
@@ -227,6 +247,37 @@ impl ProfileStore {
             }
             claimed.push(profile.port);
         }
+    }
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    let ok = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -326,6 +377,20 @@ pub async fn probe_ping(client: &reqwest::Client, api_base: &str) -> bool {
     }
 }
 
+pub async fn probe_ping_network(client: &crate::network::NetworkClient, api_base: &str) -> bool {
+    let url = format!("{}/ping", api_base.trim_end_matches('/'));
+    let Ok(response) = client.get(&url).send().await else {
+        return false;
+    };
+    if !response.status().is_success() {
+        return false;
+    }
+    response
+        .text()
+        .await
+        .is_ok_and(|text| text.trim() == "pong")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,7 +406,10 @@ mod tests {
     #[test]
     fn candidates_do_not_double_wrap_an_api_subdomain() {
         let c = api_base_candidates("https://api.moetran.com");
-        assert_eq!(c, vec!["https://api.moetran.com/api", "https://api.moetran.com"]);
+        assert_eq!(
+            c,
+            vec!["https://api.moetran.com/api", "https://api.moetran.com"]
+        );
     }
 
     /// End-to-end check of the discovery rule against a stub that behaves like the real
@@ -358,10 +426,7 @@ mod tests {
             .route("/api/ping", get(|| async { "pong" }))
             .fallback(|| async {
                 (
-                    [(
-                        axum::http::header::CONTENT_TYPE,
-                        "text/html; charset=utf-8",
-                    )],
+                    [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
                     "<!DOCTYPE html><html lang=\"zh-CN\"><head></head><body>SPA</body></html>",
                 )
             });
@@ -478,7 +543,10 @@ mod tests {
 
     #[test]
     fn site_origin_falls_back_to_the_api_base() {
-        assert_eq!(profile("", "https://api.moetran.com").site_origin(), "https://api.moetran.com");
+        assert_eq!(
+            profile("", "https://api.moetran.com").site_origin(),
+            "https://api.moetran.com"
+        );
     }
 
     /// One preset only — the instance this build is for. Everything else is added by hand.
@@ -489,15 +557,30 @@ mod tests {
         let only = store.get("moetran").expect("the moetran preset must exist");
         assert_eq!(only.api_base, "https://api.moetran.com");
         assert_eq!(only.site_url, "https://moetran.com");
-        assert_eq!(store.active, "moetran", "the preset must also be the active one");
+        assert_eq!(
+            store.active, "moetran",
+            "the preset must also be the active one"
+        );
     }
 
     #[test]
     fn preset_matching_extracts_host_correctly() {
-        assert_eq!(extract_host("https://moetran.com"), Some("moetran.com".into()));
-        assert_eq!(extract_host("https://moetran.com/"), Some("moetran.com".into()));
-        assert_eq!(extract_host("https://moeflow.basmc.org/some/path"), Some("moeflow.basmc.org".into()));
-        assert_eq!(extract_host("http://172.29.133.24:8080"), Some("172.29.133.24:8080".into()));
+        assert_eq!(
+            extract_host("https://moetran.com"),
+            Some("moetran.com".into())
+        );
+        assert_eq!(
+            extract_host("https://moetran.com/"),
+            Some("moetran.com".into())
+        );
+        assert_eq!(
+            extract_host("https://moeflow.basmc.org/some/path"),
+            Some("moeflow.basmc.org".into())
+        );
+        assert_eq!(
+            extract_host("http://172.29.133.24:8080"),
+            Some("172.29.133.24:8080".into())
+        );
         assert_eq!(extract_host("not-a-url"), None);
     }
 
@@ -524,9 +607,18 @@ mod tests {
 
     #[test]
     fn default_api_base_appends_api_segment() {
-        assert_eq!(default_api_base("https://example.com"), "https://example.com/api");
-        assert_eq!(default_api_base("https://example.com/"), "https://example.com/api");
-        assert_eq!(default_api_base("http://192.168.1.1:8080"), "http://192.168.1.1:8080/api");
+        assert_eq!(
+            default_api_base("https://example.com"),
+            "https://example.com/api"
+        );
+        assert_eq!(
+            default_api_base("https://example.com/"),
+            "https://example.com/api"
+        );
+        assert_eq!(
+            default_api_base("http://192.168.1.1:8080"),
+            "http://192.168.1.1:8080/api"
+        );
     }
 
     #[test]
@@ -534,11 +626,18 @@ mod tests {
         let mut store = ProfileStore::with_presets();
         store.ensure_ports();
         let ports: Vec<u16> = store.profiles.iter().map(|p| p.port).collect();
-        assert!(ports.iter().all(|p| *p != 0), "every profile needs a port: {ports:?}");
+        assert!(
+            ports.iter().all(|p| *p != 0),
+            "every profile needs a port: {ports:?}"
+        );
         let mut sorted = ports.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), ports.len(), "ports must be distinct: {ports:?}");
+        assert_eq!(
+            sorted.len(),
+            ports.len(),
+            "ports must be distinct: {ports:?}"
+        );
     }
 
     /// The regression this guards: `upsert_profile` calls `ensure_ports` while our own
@@ -577,7 +676,10 @@ mod tests {
         store.profiles.push(second);
         store.ensure_ports();
 
-        assert_eq!(store.profiles[0].port, 47999, "the first claimant keeps the port");
+        assert_eq!(
+            store.profiles[0].port, 47999,
+            "the first claimant keeps the port"
+        );
         assert_ne!(store.profiles[1].port, 47999);
         assert_ne!(store.profiles[1].port, 0);
     }

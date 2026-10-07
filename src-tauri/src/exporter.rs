@@ -22,7 +22,7 @@
 //!
 //! `patches/backend-show-blank.patch` makes an unpatched server honour the parameter.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::labelplus::{self, LpFile, LpLocale, LpSource};
 use crate::media::MediaCache;
+use crate::profiles::Profile;
 
 /// `FileType.IMAGE` — see `app/constants/file.py`.
 const FILE_TYPE_IMAGE: i64 = 2;
@@ -66,6 +67,9 @@ struct ApiFile {
     name: String,
     #[serde(rename = "type")]
     file_type: i64,
+    /// Signed storage URL used by the browser and the server's export task.
+    #[serde(default)]
+    url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -145,33 +149,24 @@ fn split_digit_runs(text: &str) -> Vec<String> {
 ///
 /// Replicates `default_translations_order = ["-selected", "-proofread_content", "-edit_time"]`
 /// and the `proofread_content or content` fallback in `File.to_labelplus`.
-fn best_content(sources: &ApiSource) -> String {
+fn best_content(source: &ApiSource) -> String {
     let mut all: Vec<&ApiTranslation> = Vec::new();
-    if let Some(mine) = sources.my_translation.as_ref() {
+    if let Some(mine) = source.my_translation.as_ref() {
         all.push(mine);
     }
-    all.extend(sources.translations.iter());
+    all.extend(source.translations.iter());
 
+    // Re-sort after combining my_translation and translations: the former is not
+    // necessarily the candidate the server would choose.
     all.sort_by(|a, b| {
         b.selected
             .cmp(&a.selected)
-            // Descending on the raw string, with the empty value last — MongoDB's
-            // behaviour for `-proofread_content`.
-            .then_with(|| {
-                let a_empty = a.proofread_content.is_empty();
-                let b_empty = b.proofread_content.is_empty();
-                match (a_empty, b_empty) {
-                    (true, false) => std::cmp::Ordering::Greater,
-                    (false, true) => std::cmp::Ordering::Less,
-                    _ => b.proofread_content.cmp(&a.proofread_content),
-                }
-            })
+            .then_with(|| b.proofread_content.cmp(&a.proofread_content))
             .then_with(|| b.edit_time.cmp(&a.edit_time))
     });
-
     match all.first() {
-        Some(t) if !t.proofread_content.is_empty() => t.proofread_content.clone(),
-        Some(t) => t.content.clone(),
+        Some(row) if !row.proofread_content.is_empty() => row.proofread_content.clone(),
+        Some(row) => row.content.clone(),
         None => String::new(),
     }
 }
@@ -188,16 +183,26 @@ fn has_rank_gap(sources: &[ApiSource]) -> bool {
 }
 
 struct Api<'a> {
-    client: &'a reqwest::Client,
+    client: &'a crate::network::NetworkClient,
     api_base: &'a str,
     token: &'a str,
 }
 
 impl<'a> Api<'a> {
-    async fn get_json<T: for<'de> Deserialize<'de>>(
-        &self,
-        path: &str,
-    ) -> Result<T, String> {
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, String> {
+        let value = self.get_value(path).await?;
+        serde_json::from_value(value).map_err(|err| format!("解析 {path} 响应失败：{err}"))
+    }
+
+    async fn get_value(&self, path: &str) -> Result<serde_json::Value, String> {
+        self.get_response(path)
+            .await?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|err| format!("解析 {path} 响应失败：{err}"))
+    }
+
+    async fn get_response(&self, path: &str) -> Result<reqwest::Response, String> {
         let url = format!("{}/{}", self.api_base.trim_end_matches('/'), path);
         let response = self
             .client
@@ -214,10 +219,62 @@ impl<'a> Api<'a> {
         if !status.is_success() {
             return Err(format!("{path} 返回 {status}"));
         }
-        response
-            .json::<T>()
-            .await
-            .map_err(|err| format!("解析 {path} 响应失败：{err}"))
+        Ok(response)
+    }
+
+    async fn list_files(&self, path: &str) -> Result<Vec<ApiFile>, String> {
+        let mut files = Vec::new();
+        let mut seen = HashSet::new();
+        let separator = if path.contains('?') { '&' } else { '?' };
+        // Flask-apikit uses one-based page/limit and X-Pagination-Count. Some
+        // deployments omit that header; keep paging until an empty page there.
+        for page in 1.. {
+            let page_path = format!("{path}{separator}page={page}&limit=50");
+            let response = self.get_response(&page_path).await?;
+            let count = response
+                .headers()
+                .get("x-pagination-count")
+                .map(|value| {
+                    value
+                        .to_str()
+                        .ok()
+                        .and_then(|text| text.parse::<usize>().ok())
+                        .ok_or_else(|| format!("{page_path} 返回无效的分页总数"))
+                })
+                .transpose()?;
+            let value: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|err| format!("解析 {page_path} 响应失败：{err}"))?;
+            let rows = if value.is_array() {
+                value
+            } else {
+                value
+                    .get("data")
+                    .or_else(|| value.get("files"))
+                    .filter(|rows| rows.is_array())
+                    .cloned()
+                    .ok_or_else(|| format!("{page_path} 文件列表响应格式无法识别"))?
+            };
+            let entries: Vec<ApiFile> = serde_json::from_value(rows)
+                .map_err(|err| format!("解析 {page_path} 响应失败：{err}"))?;
+            if entries.is_empty() {
+                if count.is_some_and(|count| files.len() < count) {
+                    return Err(format!("{page_path} 文件列表提前结束，无法完整导出"));
+                }
+                break;
+            }
+            for entry in entries {
+                if !seen.insert(entry.id.clone()) {
+                    return Err(format!("{page_path} 返回重复文件，分页结果无法完整导出"));
+                }
+                files.push(entry);
+            }
+            if count.is_some_and(|count| files.len() >= count) {
+                break;
+            }
+        }
+        Ok(files)
     }
 }
 
@@ -230,6 +287,7 @@ struct Walked {
     dir_sort_name: String,
     sort_name: String,
     file_type: i64,
+    url: String,
 }
 
 /// Walk the project tree depth-first, computing `dir_sort_name` exactly as `File.save` does.
@@ -243,9 +301,8 @@ async fn walk_tree(api: &Api<'_>, project_id: &str) -> Result<Vec<Walked>, Strin
             Some(id) => format!("v1/projects/{project_id}/files?parent_id={id}"),
             None => format!("v1/projects/{project_id}/files"),
         };
-        let entries: Vec<ApiFile> = api.get_json(&path).await?;
+        let entries = api.list_files(&path).await?;
 
-        // Children of a folder sort the same way the server sorts a flat query.
         let mut children: Vec<Walked> = entries
             .into_iter()
             .map(|entry| Walked {
@@ -255,16 +312,15 @@ async fn walk_tree(api: &Api<'_>, project_id: &str) -> Result<Vec<Walked>, Strin
                 dir: dir.clone(),
                 dir_sort_name: dir_sort_name.clone(),
                 file_type: entry.file_type,
+                url: entry.url,
             })
             .collect();
         children.sort_by(|a, b| a.sort_name.cmp(&b.sort_name));
 
-        // Push folders in reverse so the stack yields them in sorted order.
         let folders: Vec<&Walked> = children.iter().filter(|c| c.file_type == 1).collect();
         for folder in folders.iter().rev() {
             let mut child_dir = dir.clone();
             child_dir.push(folder.name.clone());
-            // `File.save`: parent.dir_sort_name + parent.sort_name + "/"
             let child_dir_sort = format!("{}{}/", folder.dir_sort_name, folder.sort_name);
             stack.push((Some(folder.id.clone()), child_dir, child_dir_sort));
         }
@@ -275,10 +331,30 @@ async fn walk_tree(api: &Api<'_>, project_id: &str) -> Result<Vec<Walked>, Strin
     Ok(out)
 }
 
+fn image_url(profile: &Profile, file: &Walked) -> Result<String, String> {
+    if file.url.trim().is_empty() {
+        return Ok(format!(
+            "{}/v1/files/{}/content",
+            profile.api_base.trim_end_matches('/'),
+            file.id
+        ));
+    }
+    // Relative storage paths belong to the site, not its split API host or /api prefix.
+    let base = reqwest::Url::parse(&format!("{}/", profile.site_origin()))
+        .map_err(|err| format!("站点地址无效：{err}"))?;
+    let url = base
+        .join(&file.url)
+        .map_err(|err| format!("图片地址无效：{err}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("图片地址必须使用 HTTP 或 HTTPS".into());
+    }
+    Ok(url.into())
+}
+
 /// Fetch an image into the media cache (or reuse it) and return its on-disk path.
 async fn image_path(
-    client: &reqwest::Client,
-    api_base: &str,
+    client: &crate::network::NetworkClient,
+    profile: &Profile,
     cache: &MediaCache,
     token: &str,
     url: &str,
@@ -288,46 +364,92 @@ async fn image_path(
     }
 
     let mut request = client.get(url);
-    // Storage URLs are normally pre-signed, but a same-origin deployment may still want auth.
-    if url.starts_with(api_base) {
+    if let Some(referer) = profile.media_referer() {
+        request = request.header(reqwest::header::REFERER, referer);
+    }
+    // Signed storage URLs do not need the API token. Compare origins, not string
+    // prefixes, so api.example.evil cannot receive credentials for api.example.
+    let same_origin = reqwest::Url::parse(url)
+        .ok()
+        .zip(reqwest::Url::parse(&profile.api_base).ok())
+        .is_some_and(|(image, api)| image.origin() == api.origin());
+    if same_origin {
         request = request.header("Authorization", format!("Bearer {token}"));
     }
 
-    let response = request.send().await.map_err(|err| err.to_string())?;
+    let response = request
+        .send()
+        .await
+        .map_err(|err| format!("请求图片失败：{err}"))?;
     if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
+        return Err(format!("图片请求返回 HTTP {}（{url}）", response.status()));
+    }
+    if let Some(content_type) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+        let content_type = content_type.to_str().unwrap_or("").to_ascii_lowercase();
+        // A number of deployments route unknown paths to index.html with status 200. Never
+        // cache that HTML shell under an image URL — it makes the failure persistent.
+        if content_type.starts_with("text/html")
+            || content_type.starts_with("application/xhtml+xml")
+            || content_type.starts_with("application/json")
+        {
+            return Err(format!("图片接口返回了 {content_type} 而不是图片（{url}）"));
+        }
     }
 
     let temp = cache.temp_path();
-    let mut file = tokio::fs::File::create(&temp)
-        .await
-        .map_err(|err| err.to_string())?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| err.to_string())?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+    let result = async {
+        let mut file = tokio::fs::File::create(&temp)
             .await
             .map_err(|err| err.to_string())?;
+        let mut stream = response.bytes_stream();
+        let mut prefix = Vec::new();
+        let mut size = 0usize;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| err.to_string())?;
+            prefix.extend_from_slice(&chunk[..chunk.len().min(128 - prefix.len())]);
+            size += chunk.len();
+            tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        drop(file);
+        if size == 0 {
+            return Err("图片接口返回了空文件".into());
+        }
+        // HTML fallbacks are sometimes mislabeled as application/octet-stream.
+        let text = String::from_utf8_lossy(&prefix)
+            .trim_start_matches('\u{feff}')
+            .trim_start()
+            .to_ascii_lowercase();
+        if ["<!doctype html", "<html", "<head", "<body"]
+            .iter()
+            .any(|tag| text.starts_with(tag))
+        {
+            return Err("图片接口返回了 HTML 而不是图片".into());
+        }
+        cache
+            .commit(url, &temp, None)
+            .map_err(|err| err.to_string())
     }
-    drop(file);
-
-    cache
-        .commit(url, &temp, None)
-        .map_err(|err| err.to_string())
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    result
 }
 
 /// Run a full local export.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    client: &reqwest::Client,
-    api_base: &str,
+    client: &crate::network::NetworkClient,
+    profile: &Profile,
     cache: Arc<MediaCache>,
     request: &ExportRequest,
     mut progress: impl FnMut(&str, f32),
 ) -> Result<ExportReport, String> {
     let api = Api {
         client,
-        api_base,
+        api_base: &profile.api_base,
         token: &request.token,
     };
     let locale = LpLocale::from_tag(&request.locale);
@@ -343,7 +465,10 @@ pub async fn run(
             .then_with(|| a.sort_name.cmp(&b.sort_name))
     });
 
-    let images: Vec<&Walked> = tree.iter().filter(|f| f.file_type == FILE_TYPE_IMAGE).collect();
+    let images: Vec<&Walked> = tree
+        .iter()
+        .filter(|f| f.file_type == FILE_TYPE_IMAGE)
+        .collect();
     let total = images.len().max(1);
 
     let mut warnings: Vec<String> = Vec::new();
@@ -385,14 +510,14 @@ pub async fn run(
         });
 
         if request.include_images {
-            // The backend's `File.url` is what lands in the zip; fall back to the
-            // file-content endpoint when a storage URL is unavailable.
-            let url = format!(
-                "{}/v1/files/{}/content",
-                api_base.trim_end_matches('/'),
-                file.id
-            );
-            match image_path(client, api_base, &cache, &request.token, &url).await {
+            // Official MoeFlow supplies File.url; /content is an optional fork
+            // extension, not a route that the supported deployments guarantee.
+            let url = image_url(profile, file);
+            let result = match url {
+                Ok(url) => image_path(client, profile, &cache, &request.token, &url).await,
+                Err(err) => Err(err),
+            };
+            match result {
                 Ok(path) => {
                     image_files.insert(file.name.clone(), path);
                 }
@@ -401,6 +526,14 @@ pub async fn run(
                 }
             }
         }
+    }
+
+    if request.include_images && !images.is_empty() && image_files.is_empty() {
+        return Err(format!(
+            "全部 {} 张图片下载失败，未生成导出文件：{}",
+            images.len(),
+            skipped_images.join("；")
+        ));
     }
 
     if !gap_files.is_empty() {
@@ -436,7 +569,7 @@ pub async fn run(
 /// Mirror of `Project.to_output_json()` plus the two fields the task adds.
 async fn build_project_json(api: &Api<'_>, request: &ExportRequest) -> serde_json::Value {
     let detail: serde_json::Value = api
-        .get_json(&format!("v1/projects/{}", request.project_id))
+        .get_value(&format!("v1/projects/{}", request.project_id))
         .await
         .unwrap_or(serde_json::Value::Null);
 
@@ -488,13 +621,15 @@ fn write_zip(
         }
         zip.start_file("errors.txt", options)
             .map_err(|err| err.to_string())?;
-        zip.write_all(report.as_bytes()).map_err(|err| err.to_string())?;
+        zip.write_all(report.as_bytes())
+            .map_err(|err| err.to_string())?;
     }
 
     let json = serde_json::to_string(&project_json).map_err(|err| err.to_string())?;
     zip.start_file("project.json", options)
         .map_err(|err| err.to_string())?;
-    zip.write_all(json.as_bytes()).map_err(|err| err.to_string())?;
+    zip.write_all(json.as_bytes())
+        .map_err(|err| err.to_string())?;
 
     for (name, path) in images {
         zip.start_file(format!("images/{name}"), options)
@@ -583,7 +718,12 @@ mod tests {
         let s = source(
             0,
             Some(translation("newer", "", false, "2026-05-01T00:00:00")),
-            vec![translation("older", "checked", false, "2026-01-01T00:00:00")],
+            vec![translation(
+                "older",
+                "checked",
+                false,
+                "2026-01-01T00:00:00",
+            )],
         );
         assert_eq!(best_content(&s), "checked");
     }
@@ -606,13 +746,21 @@ mod tests {
     /// `proofread_content or content` — an empty proofread falls back to content.
     #[test]
     fn empty_proofread_falls_back_to_content() {
-        let s = source(0, Some(translation("body", "", false, "2026-01-01T00:00:00")), vec![]);
+        let s = source(
+            0,
+            Some(translation("body", "", false, "2026-01-01T00:00:00")),
+            vec![],
+        );
         assert_eq!(best_content(&s), "body");
     }
 
     #[test]
     fn dense_ranks_are_not_flagged() {
-        let s = vec![source(0, None, vec![]), source(1, None, vec![]), source(2, None, vec![])];
+        let s = vec![
+            source(0, None, vec![]),
+            source(1, None, vec![]),
+            source(2, None, vec![]),
+        ];
         assert!(!has_rank_gap(&s));
     }
 
@@ -632,5 +780,491 @@ mod tests {
     fn ranks_starting_above_zero_are_not_flagged() {
         let s = vec![source(5, None, vec![]), source(6, None, vec![])];
         assert!(!has_rank_gap(&s));
+    }
+
+    #[test]
+    fn selected_unproofread_beats_unselected_proofread() {
+        let s = source(
+            0,
+            Some(translation("selected", "", true, "2020")),
+            vec![translation("other", "checked", false, "2026")],
+        );
+        assert_eq!(best_content(&s), "selected");
+    }
+
+    #[test]
+    fn proofread_sort_is_lexicographic_not_just_presence() {
+        let s = source(
+            0,
+            Some(translation("mine", "alpha", false, "2026")),
+            vec![translation("other", "zulu", false, "2020")],
+        );
+        assert_eq!(best_content(&s), "zulu");
+    }
+
+    #[test]
+    fn newest_mine_beats_last_candidate() {
+        let s = source(
+            0,
+            Some(translation("new", "same", false, "2026")),
+            vec![translation("old", "same", false, "2020")],
+        );
+        assert_eq!(best_content(&s), "same");
+        let s = source(
+            0,
+            Some(translation("new", "", false, "2026")),
+            vec![translation("old", "", false, "2020")],
+        );
+        assert_eq!(best_content(&s), "new");
+    }
+
+    #[derive(Clone, Copy)]
+    enum MockMode {
+        Normal,
+        NoCount,
+        Html,
+        MislabeledHtml,
+        EmptyImage,
+        Missing,
+        Partial,
+        UnknownList,
+        RepeatPage,
+        ContentFallback,
+        BlankGap,
+    }
+
+    #[derive(Clone)]
+    struct MockState {
+        mode: MockMode,
+        site: String,
+        calls: Arc<std::sync::Mutex<Vec<(String, Option<String>, Option<String>)>>>,
+    }
+
+    // A valid, byte-exact 1x1 PNG, not a URL placeholder or an HTML response.
+    fn png_bytes() -> Vec<u8> {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        ).unwrap()
+    }
+
+    async fn mock_http(
+        axum::extract::State(state): axum::extract::State<MockState>,
+        uri: axum::http::Uri,
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+        let header = |name| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        state.calls.lock().unwrap().push((
+            uri.to_string(),
+            header("referer"),
+            header("authorization"),
+        ));
+        let path = uri.path();
+        let query: BTreeMap<String, String> = reqwest::Url::parse(&format!("http://mock{uri}"))
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        if path == "/api/v1/projects/project/files" {
+            assert_eq!(
+                header("authorization").as_deref(),
+                Some("Bearer test-token")
+            );
+            assert_eq!(query.get("limit").map(String::as_str), Some("50"));
+            if matches!(state.mode, MockMode::UnknownList) {
+                return axum::Json(serde_json::json!({"unexpected": []})).into_response();
+            }
+            let page = query.get("page").unwrap().parse::<usize>().unwrap();
+            let folder = query.get("parent_id").map(String::as_str);
+            // Deliberately cap server pages at two rows, regardless of requested limit.
+            let rows = match folder {
+                None if page == 1 || matches!(state.mode, MockMode::RepeatPage) => {
+                    serde_json::json!([
+                        {"id":"f10", "name":"10.png", "type":2, "url":format!("{}/storage/10.png?signature=keep-me", state.site)},
+                        {"id":"folder", "name":"chapter2", "type":1}
+                    ])
+                }
+                None if page == 2 => serde_json::json!([
+                    {"id":"f2", "name":"2.png", "type":2, "url":if matches!(state.mode, MockMode::ContentFallback) { "" } else { "/storage/2.png" }}
+                ]),
+                Some("folder") if page == 1 => serde_json::json!([
+                    {"id":"nested", "name":"1.png", "type":2, "url":"/storage/nested.png"}
+                ]),
+                _ => serde_json::json!([]),
+            };
+            let mut response = axum::Json(rows).into_response();
+            if !matches!(state.mode, MockMode::NoCount | MockMode::RepeatPage) {
+                response.headers_mut().insert(
+                    "x-pagination-count",
+                    if folder.is_some() { "1" } else { "3" }.parse().unwrap(),
+                );
+            }
+            return response;
+        }
+        if path.starts_with("/api/v1/files/") && path.ends_with("/sources") {
+            assert_eq!(query.get("target_id").map(String::as_str), Some("target"));
+            assert_eq!(query.get("paging").map(String::as_str), Some("false"));
+            assert_eq!(query.get("show_blank").map(String::as_str), Some("true"));
+            let mut rows = serde_json::json!([
+                {"x":0.1,"y":0.2,"rank":0,"position_type":1,
+                    "my_translation":{"content":"selected","selected":true,"edit_time":"2020"},
+                    "translations":[{"content":"wrong","proofread_content":"checked","edit_time":"2026"}]},
+                {"x":0.3,"y":0.4,"rank":1,"position_type":2,
+                    "my_translation":{"content":"wrong","proofread_content":"alpha","edit_time":"2026"},
+                    "translations":[{"content":"other","proofread_content":"zulu","edit_time":"2020"}]},
+                {"x":0.5,"y":0.6,"rank":2,"position_type":1,
+                    "my_translation":{"content":"newest","edit_time":"2026"},
+                    "translations":[{"content":"wrong","edit_time":"2020"}]},
+                {"x":0.7,"y":0.8,"rank":3,"position_type":1,"content":"must remain blank"}
+            ]);
+            if matches!(state.mode, MockMode::BlankGap) {
+                rows.as_array_mut().unwrap().remove(1);
+            }
+            return axum::Json(rows).into_response();
+        }
+        if path == "/api/v1/projects/project" {
+            return axum::Json(serde_json::json!({"name":"mock project"})).into_response();
+        }
+        if path.starts_with("/storage/") || path == "/api/v1/files/f2/content" {
+            assert_eq!(header("referer"), Some(format!("{}/", state.site)));
+            if path.starts_with("/storage/") {
+                // The signed storage host is distinct from the API host. Do not leak tokens.
+                assert_eq!(header("authorization"), None);
+            } else {
+                assert_eq!(
+                    header("authorization").as_deref(),
+                    Some("Bearer test-token")
+                );
+            }
+            if matches!(state.mode, MockMode::Html)
+                || (matches!(state.mode, MockMode::Partial) && path == "/storage/2.png")
+            {
+                return (
+                    [("content-type", "text/html; charset=utf-8")],
+                    "<html>login shell</html>",
+                )
+                    .into_response();
+            }
+            if matches!(state.mode, MockMode::MislabeledHtml) {
+                return (
+                    [("content-type", "application/octet-stream")],
+                    "  <!DOCTYPE html><html>shell</html>",
+                )
+                    .into_response();
+            }
+            if matches!(state.mode, MockMode::EmptyImage) {
+                return ([("content-type", "image/png")], Vec::<u8>::new()).into_response();
+            }
+            if matches!(state.mode, MockMode::Missing) {
+                return StatusCode::NOT_FOUND.into_response();
+            }
+            return ([("content-type", "image/png")], png_bytes()).into_response();
+        }
+        // Official deployments do NOT provide /v1/files/:id/content.
+        StatusCode::NOT_FOUND.into_response()
+    }
+
+    struct MockExport {
+        profile: Profile,
+        request: ExportRequest,
+        cache: Arc<MediaCache>,
+        state: MockState,
+        servers: Vec<tokio::task::JoinHandle<()>>,
+        dir: PathBuf,
+    }
+
+    impl MockExport {
+        async fn new(mode: MockMode) -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static SEQ: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "moeflow-export-test-{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let media = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let api = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let site = format!("http://{}", media.local_addr().unwrap());
+            let state = MockState {
+                mode,
+                site: site.clone(),
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+            };
+            let profile = Profile {
+                id: "test".into(),
+                name: "test".into(),
+                site_url: format!("{site}/workbench"),
+                api_base: format!("http://{}/api", api.local_addr().unwrap()),
+                port: 0,
+                allow_invalid_certs: false,
+                media_origins: vec![],
+            };
+            let request = ExportRequest {
+                project_id: "project".into(),
+                target_id: "target".into(),
+                token: "test-token".into(),
+                locale: "en".into(),
+                destination: dir.join("export.zip"),
+                include_images: true,
+            };
+            let cache = Arc::new(MediaCache::new(dir.join("cache"), 1024 * 1024));
+            let mut servers = Vec::new();
+            for listener in [api, media] {
+                let app = axum::Router::new()
+                    .fallback(mock_http)
+                    .with_state(state.clone());
+                servers.push(tokio::spawn(async move {
+                    axum::serve(listener, app).await.unwrap();
+                }));
+            }
+            Self {
+                profile,
+                request,
+                cache,
+                state,
+                servers,
+                dir,
+            }
+        }
+
+        async fn export(&self) -> Result<ExportReport, String> {
+            run(
+                &crate::network::NetworkClient::build(
+                    &crate::network::ProxySettings::default(),
+                    false,
+                    false,
+                )
+                .unwrap(),
+                &self.profile,
+                self.cache.clone(),
+                &self.request,
+                |_, _| {},
+            )
+            .await
+        }
+
+        fn zip_bytes(&self, name: &str) -> Vec<u8> {
+            use std::io::Read;
+            let mut archive =
+                zip::ZipArchive::new(std::fs::File::open(&self.request.destination).unwrap())
+                    .unwrap();
+            let mut bytes = Vec::new();
+            archive
+                .by_name(name)
+                .unwrap()
+                .read_to_end(&mut bytes)
+                .unwrap();
+            bytes
+        }
+    }
+
+    impl Drop for MockExport {
+        fn drop(&mut self) {
+            for server in &self.servers {
+                server.abort();
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn export_uses_file_urls_referer_pagination_and_byte_exact_legacy_rules() {
+        let fixture = MockExport::new(MockMode::Normal).await;
+        let report = fixture.export().await.unwrap();
+        assert_eq!(report.file_count, 3);
+        assert_eq!(report.image_count, 3);
+        assert!(!report.diverged);
+        assert!(report.skipped_images.is_empty());
+        for name in ["2.png", "10.png", "1.png"] {
+            assert_eq!(fixture.zip_bytes(&format!("images/{name}")), png_bytes());
+        }
+        let expected = [
+            (Vec::new(), "2.png"),
+            (Vec::new(), "10.png"),
+            (vec!["chapter2".into()], "1.png"),
+        ]
+        .into_iter()
+        .map(|(dir, name)| LpFile {
+            dir,
+            name: name.into(),
+            sources: vec![
+                LpSource {
+                    x: 0.1,
+                    y: 0.2,
+                    position_type: 1,
+                    content: "selected".into(),
+                },
+                LpSource {
+                    x: 0.3,
+                    y: 0.4,
+                    position_type: 2,
+                    content: "zulu".into(),
+                },
+                LpSource {
+                    x: 0.5,
+                    y: 0.6,
+                    position_type: 1,
+                    content: "newest".into(),
+                },
+                LpSource {
+                    x: 0.7,
+                    y: 0.8,
+                    position_type: 1,
+                    content: String::new(),
+                },
+            ],
+        })
+        .collect::<Vec<_>>();
+        assert_eq!(
+            fixture.zip_bytes("translations.txt"),
+            labelplus::render_document(&expected, LpLocale::from_tag("en")).as_bytes()
+        );
+        let calls = fixture.state.calls.lock().unwrap();
+        let routes: Vec<_> = calls.iter().map(|(path, _, _)| path.as_str()).collect();
+        assert_eq!(
+            routes
+                .iter()
+                .filter(|route| route.starts_with("/api/v1/projects/project/files"))
+                .count(),
+            3
+        );
+        assert!(routes.contains(&"/api/v1/projects/project/files?page=2&limit=50"));
+        assert!(routes.contains(&"/api/v1/projects/project/files?parent_id=folder&page=1&limit=50"));
+        assert!(routes.contains(&"/storage/10.png?signature=keep-me"));
+        assert!(!routes
+            .iter()
+            .any(|route| route.ends_with("/content") || route.starts_with("/api/projects/")));
+    }
+
+    #[tokio::test]
+    async fn export_pages_until_empty_when_count_header_is_missing() {
+        let fixture = MockExport::new(MockMode::NoCount).await;
+        assert_eq!(fixture.export().await.unwrap().image_count, 3);
+        let calls = fixture.state.calls.lock().unwrap();
+        assert!(calls
+            .iter()
+            .any(|(path, _, _)| path == "/api/v1/projects/project/files?page=3&limit=50"));
+        assert!(calls.iter().any(|(path, _, _)| path
+            == "/api/v1/projects/project/files?parent_id=folder&page=2&limit=50"));
+    }
+
+    #[tokio::test]
+    async fn all_image_failures_and_html_are_errors_not_successful_empty_archives() {
+        for mode in [MockMode::Html, MockMode::Missing] {
+            let fixture = MockExport::new(mode).await;
+            let err = fixture.export().await.unwrap_err();
+            assert!(err.contains("全部 3 张图片下载失败"), "{err}");
+            assert!(!fixture.request.destination.exists());
+            assert_eq!(fixture.cache.stats().entries, 0);
+            if matches!(mode, MockMode::Html) {
+                assert!(err.contains("text/html"));
+            } else {
+                assert!(err.contains("404"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mislabeled_html_and_empty_image_are_not_cached() {
+        for mode in [MockMode::MislabeledHtml, MockMode::EmptyImage] {
+            let fixture = MockExport::new(mode).await;
+            assert!(fixture
+                .export()
+                .await
+                .unwrap_err()
+                .contains("全部 3 张图片下载失败"));
+            assert_eq!(fixture.cache.stats().entries, 0);
+            assert!(!fixture.request.destination.exists());
+            assert_eq!(std::fs::read_dir(fixture.cache.dir()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_export_reuses_cached_bytes_without_media_requests() {
+        let fixture = MockExport::new(MockMode::Normal).await;
+        fixture.export().await.unwrap();
+        fixture.state.calls.lock().unwrap().clear();
+        assert_eq!(fixture.export().await.unwrap().image_count, 3);
+        assert_eq!(fixture.zip_bytes("images/2.png"), png_bytes());
+        assert!(!fixture
+            .state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(path, _, _)| path.starts_with("/storage/")));
+    }
+
+    #[tokio::test]
+    async fn partial_image_failure_keeps_valid_images_and_errors_report() {
+        let fixture = MockExport::new(MockMode::Partial).await;
+        let report = fixture.export().await.unwrap();
+        assert_eq!(report.image_count, 2);
+        assert_eq!(report.skipped_images.len(), 1);
+        assert_eq!(fixture.cache.stats().entries, 2);
+        assert_eq!(fixture.zip_bytes("images/10.png"), png_bytes());
+        assert!(String::from_utf8(fixture.zip_bytes("errors.txt"))
+            .unwrap()
+            .contains("text/html"));
+    }
+
+    #[tokio::test]
+    async fn unknown_file_shapes_and_repeated_pages_are_explicit_errors() {
+        for mode in [MockMode::UnknownList, MockMode::RepeatPage] {
+            let fixture = MockExport::new(mode).await;
+            assert!(fixture.export().await.is_err());
+            assert!(!fixture.request.destination.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn content_extension_is_only_used_when_storage_url_is_absent() {
+        let fixture = MockExport::new(MockMode::ContentFallback).await;
+        assert_eq!(fixture.export().await.unwrap().image_count, 3);
+        assert_eq!(fixture.zip_bytes("images/2.png"), png_bytes());
+        let calls = fixture.state.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|(path, _, _)| path.ends_with("/content"))
+                .count(),
+            1
+        );
+        assert!(calls
+            .iter()
+            .any(|(path, _, _)| path == "/api/v1/files/f2/content"));
+    }
+
+    #[tokio::test]
+    async fn txt_only_export_does_not_download_images() {
+        let mut fixture = MockExport::new(MockMode::Missing).await;
+        fixture.request.include_images = false;
+        let report = fixture.export().await.unwrap();
+        assert_eq!(report.file_count, 3);
+        assert_eq!(report.image_count, 0);
+        assert!(report.skipped_images.is_empty());
+        assert!(!fixture
+            .state
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(path, _, _)| path.starts_with("/storage/") || path.ends_with("/content")));
+    }
+
+    #[tokio::test]
+    async fn hidden_blank_sources_still_warn_about_label_divergence() {
+        let fixture = MockExport::new(MockMode::BlankGap).await;
+        let report = fixture.export().await.unwrap();
+        assert!(report.diverged);
+        assert_eq!(report.warnings.len(), 1);
     }
 }

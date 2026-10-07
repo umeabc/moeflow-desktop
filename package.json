@@ -1,7 +1,7 @@
 {
   "name": "moeflow-desktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MoeFlow desktop client for Windows",
   "scripts": {
     "fetch:frontend": "bash scripts/fetch-frontend.sh",
@@ -9,7 +9,7 @@
     "icons": "tauri icon frontend/public/static/logo512.png -o src-tauri/icons",
     "dev": "tauri dev",
     "build": "tauri build",
-    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:rust": "bun scripts/run-rust-tests.mjs",
     "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml"
   },
   "devDependencies": {

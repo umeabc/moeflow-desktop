@@ -140,6 +140,10 @@
   .inline label { display: flex; align-items: center; gap: 6px; }
   .inline input[type=number] { width: 110px; }
   hr { border: 0; border-top: 1px solid var(--divider); margin: 4px 0 12px; }
+  .proxy-options { display: grid; gap: 8px; margin-bottom: 12px; }
+  .proxy-options label { display: flex; align-items: center; gap: 8px; }
+  .proxy-options input { accent-color: var(--accent); }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -184,6 +188,22 @@
   </div>
 
   <div class="card">
+    <h2 id="proxy-heading">代理设置</h2>
+    <div class="proxy-options" role="radiogroup" aria-labelledby="proxy-heading">
+      <label><input type="radio" name="proxy-mode" value="direct" />直接连接</label>
+      <label><input type="radio" name="proxy-mode" value="system" checked />使用系统代理</label>
+      <label><input type="radio" name="proxy-mode" value="manual" />手动添加 HTTP 代理</label>
+    </div>
+    <label class="field" id="proxy-url-field" hidden>
+      <span>HTTP 代理地址</span>
+      <input type="text" id="proxy-url" placeholder="http://127.0.0.1:7890" disabled />
+    </label>
+    <p class="muted">应用于所有实例的服务器连接、取图和下载。应用后新请求立即生效。</p>
+    <div class="buttons"><button id="btn-proxy" class="primary">应用代理设置</button></div>
+    <div class="status" id="proxy-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="card">
     <h2>图片缓存</h2>
     <div class="inline">
       <span id="cache-summary" class="muted">读取中…</span>
@@ -202,6 +222,9 @@
 const { invoke } = window.__TAURI__.core;
 
 let state = { profiles: [], active: "", editing: null };
+let savingServer = false;
+let savingProxy = false;
+let proxyDirty = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -309,34 +332,10 @@ $("btn-use").onclick = async () => {
 };
 
 $("btn-save").onclick = async () => {
+  if (savingServer) return;
   const site = $("f-site").value.trim();
   let api = $("f-api").value.trim();
   if (!site && !api) { setStatus($("probe-status"), "站点地址不能为空", "err"); return; }
-
-  // Confirm the API base before writing it. Leaving the field empty used to mean "use the
-  // site address", which is the one answer that is usually wrong — see the note on
-  // `upsert_profile`, which enforces this server-side too.
-  if (!api || api === site) {
-    const save = $("btn-save");
-    save.disabled = true;
-    setStatus($("probe-status"), "正在确认 API 地址…");
-    try {
-      const result = await invoke("probe_server", { input: api || site });
-      if (!result.ok || !result.api_base) {
-        setStatus($("probe-status"), result.message, "err");
-        return;
-      }
-      api = result.api_base;
-      $("f-api").value = api;
-      setStatus($("probe-status"), result.message, "ok");
-    } catch (err) {
-      setStatus($("probe-status"), String(err), "err");
-      return;
-    } finally {
-      save.disabled = false;
-    }
-  }
-
   const profile = {
     id: state.editing?.id ?? slug($("f-name").value || site),
     name: $("f-name").value.trim() || site || api,
@@ -347,7 +346,21 @@ $("btn-save").onclick = async () => {
     media_origins: $("f-media").value.split(",").map((s) => s.trim()).filter(Boolean),
   };
 
+  savingServer = true;
+  $("btn-save").disabled = true;
+  $("btn-save").textContent = "保存中…";
+  setStatus($("probe-status"), "正在保存…");
   try {
+    if (!api || api === site) {
+      setStatus($("probe-status"), "正在确认 API 地址…");
+      const result = await invoke("probe_server", { input: api || site });
+      if (!result.ok || !result.api_base) {
+        setStatus($("probe-status"), result.message, "err");
+        return;
+      }
+      profile.api_base = result.api_base;
+      $("f-api").value = result.api_base;
+    }
     const payload = await invoke("upsert_profile", { profile });
     applyPayload(payload);
     state.editing = payload.profiles.find((p) => p.id === profile.id) ?? state.editing;
@@ -356,6 +369,10 @@ $("btn-save").onclick = async () => {
     setStatus($("probe-status"), "已保存", "ok");
   } catch (err) {
     setStatus($("probe-status"), String(err), "err");
+  } finally {
+    savingServer = false;
+    $("btn-save").disabled = false;
+    $("btn-save").textContent = "保存";
   }
 };
 
@@ -386,7 +403,68 @@ $("btn-clear").onclick = async () => {
   setStatus($("cache-status"), "缓存已清空", "ok");
 };
 
+function selectedProxyMode() {
+  return document.querySelector('input[name="proxy-mode"]:checked')?.value ?? "system";
+}
+
+function updateProxyInput() {
+  const manual = selectedProxyMode() === "manual";
+  $("proxy-url-field").hidden = !manual;
+  $("proxy-url").disabled = !manual;
+}
+
+function applyProxy(settings) {
+  const proxy = settings ?? { mode: "system", url: "" };
+  for (const radio of document.querySelectorAll('input[name="proxy-mode"]')) {
+    radio.checked = radio.value === proxy.mode;
+  }
+  $("proxy-url").value = proxy.url ?? "";
+  updateProxyInput();
+}
+
+for (const radio of document.querySelectorAll('input[name="proxy-mode"]')) {
+  radio.onchange = () => { proxyDirty = true; updateProxyInput(); };
+}
+$("proxy-url").oninput = () => { proxyDirty = true; };
+
+$("btn-proxy").onclick = async () => {
+  if (savingProxy) return;
+  const mode = selectedProxyMode();
+  const url = $("proxy-url").value.trim();
+  if (mode === "manual") {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" || !parsed.hostname || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+        throw new Error("请输入 HTTP 代理地址，例如 http://127.0.0.1:7890");
+      }
+    } catch (err) {
+      setStatus($("proxy-status"), "请输入有效的 HTTP 代理地址，例如 http://127.0.0.1:7890", "err");
+      return;
+    }
+  }
+  savingProxy = true;
+  $("btn-proxy").disabled = true;
+  for (const radio of document.querySelectorAll('input[name="proxy-mode"]')) radio.disabled = true;
+  $("proxy-url").disabled = true;
+  setStatus($("proxy-status"), "正在应用…");
+  try {
+    const payload = await invoke("set_proxy_settings", { settings: { mode, url } });
+    proxyDirty = false;
+    applyPayload(payload);
+    setStatus($("proxy-status"), "代理设置已保存，新请求立即生效", "ok");
+  } catch (err) {
+    setStatus($("proxy-status"), String(err), "err");
+  } finally {
+    savingProxy = false;
+    $("btn-proxy").disabled = false;
+    for (const radio of document.querySelectorAll('input[name="proxy-mode"]')) radio.disabled = false;
+    updateProxyInput();
+  }
+};
+
 function applyPayload(payload) {
+  $("version").textContent = payload.version ? `v${payload.version}` : "";
+  if (!proxyDirty) applyProxy(payload.proxy);
   const editingId = state.editing?.id;
   state.profiles = payload.profiles;
   state.active = payload.active;
