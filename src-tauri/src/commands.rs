@@ -16,6 +16,8 @@ pub struct BootPayload {
     pub cache: CacheStats,
     pub proxy: ProxySettings,
     pub version: &'static str,
+    /// Empty means "detect automatically"; prefilled by the settings page.
+    pub codex_path: String,
 }
 
 pub fn payload(state: &AppState) -> BootPayload {
@@ -28,6 +30,7 @@ pub fn payload(state: &AppState) -> BootPayload {
         skip_launcher: store.skip_launcher,
         cache: state.cache.stats(),
         proxy: store.proxy,
+        codex_path: store.codex_path,
         version: env!("CARGO_PKG_VERSION"),
     }
 }
@@ -52,6 +55,15 @@ pub async fn set_proxy_settings(
     settings: ProxySettings,
 ) -> Result<BootPayload, String> {
     state.set_proxy(settings).await?;
+    Ok(payload(&state))
+}
+
+#[tauri::command]
+pub async fn set_codex_path(
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<BootPayload, String> {
+    state.set_codex_path(path).await?;
     Ok(payload(&state))
 }
 

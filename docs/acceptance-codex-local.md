@@ -57,3 +57,17 @@ MT="C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/mt.exe"
 4. 无标号的页面：确认新建标号的 rank 从 1 递增、框贴合文字。
 5. 破坏性用例：开始后立刻切换文件，应提示「页面已切换，停止后续写入」。
 6. 失败恢复：中途失败会显示已写入条数；**不要**直接重跑 `label-only`（会重复建标号）。
+
+## 追加：`program not found` 的根因与修复（0.1.2）
+
+现象：0.1.1 安装版启动后 dock 显示「Codex 不可用：program not found」。
+
+根因：Codex 桌面版不把自己的 CLI 放进 PATH（本机实际在
+`C:\Users\Administrator\Codex\_internal\app\resources\codex.exe`），而 GUI 进程也拿不到用户在终端里
+改过的 PATH，所以「直接 spawn `codex`」必然失败——0.1.1 只试了 `CODEX_BIN` 和 PATH。
+
+修复：四级解析（设置里保存的路径 → `CODEX_BIN` → 常见安装位置 → 裸 `codex`），设置页新增
+「本地 Codex」区块（路径输入框 + 一键锁定 + 保存并检测），`codex_status` 返回配置值/实际解析/版本/候选。
+本机实测 `status("")` → `C:\Users\Administrator\Codex/_internal/app/resources/codex.exe`，
+版本 `codex-cli 0.163.0-alpha.11.1`（`codex::tests::detects_and_probes_the_local_install`）。
+dock 现在在窗口重新获得焦点时重试探测，改完设置无需重启。

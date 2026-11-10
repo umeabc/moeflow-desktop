@@ -42,9 +42,18 @@ fileID/targetID，切页即停止。这里没有删除或自动回滚。
 
 ## Codex CLI 契约
 
-二进制取 `CODEX_BIN`，否则从 PATH 找 `codex`。直接启动可执行文件，不经过 shell。
-Windows 设置 `CREATE_NO_WINDOW`；若 PATH 只有 npm 的 `codex.cmd` 包装器，
-请用 `CODEX_BIN` 指向真实可执行文件。启动客户端前须配置好环境，并完成 Codex 登录。
+可执行文件按四级顺序解析：**「设置 → 本地 Codex」里保存的路径** → 环境变量 `CODEX_BIN`
+→ 常见安装位置（`%USERPROFILE%\Codex\_internalppesources\codex.exe`、
+`%LOCALAPPDATA%\Codex\_internalppesources\codex.exe`、`%LOCALAPPDATA%\Programs\Codex\codex.exe`、
+`%ProgramFiles%\Codex\codex.exe`，以及 PATH 里的 `codex.exe`）→ 裸 `codex`。
+
+这条顺序不是可选的：Codex 桌面版不会把 CLI 放进 PATH，而 GUI 进程也拿不到用户在终端里改的 PATH，
+所以「直接 spawn codex」在「只装了 Codex 应用」的机器上必然失败（`program not found`）。
+设置页的**一键锁定**会把上述位置逐个试 `--version`，记住第一个能应答的路径；
+`codex_status` 返回配置值、实际解析结果、版本与候选清单，供设置页展示。
+`codex.cmd` / `.ps1` 这类 npm 包装脚本会被明确拒绝——运行它们需要经过 shell，
+而提示词是用户内容，不能交给 cmd.exe。直接启动可执行文件，不经过 shell，Windows 设置 `CREATE_NO_WINDOW`。
+使用前仍需完成 Codex 登录。
 
 ```text
 codex --version

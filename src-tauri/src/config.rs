@@ -270,6 +270,14 @@ impl AppState {
         .await
     }
 
+    pub async fn set_codex_path(&self, path: String) -> Result<(), String> {
+        self.mutate(move |store| {
+            store.codex_path = path;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn set_limit(&self, bytes: u64) -> Result<(), String> {
         self.mutate(move |store| {
             store.cache_limit_bytes = bytes;

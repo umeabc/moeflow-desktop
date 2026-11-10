@@ -204,6 +204,20 @@
   </div>
 
   <div class="card">
+    <h2>本地 Codex</h2>
+    <p class="muted">「本地 Codex 翻译」用本机的 codex 识别标号与翻译，请求不经过服务器。留空则自动检测。</p>
+    <label class="field">
+      <span>codex 可执行文件</span>
+      <input type="text" id="codex-path" placeholder="留空自动检测，例如 C:\Users\你\Codex\_internal\app\resources\codex.exe" />
+    </label>
+    <div class="buttons">
+      <button id="btn-codex-detect" class="primary">一键锁定</button>
+      <button id="btn-codex-save">保存并检测</button>
+    </div>
+    <div class="status" id="codex-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="card">
     <h2>图片缓存</h2>
     <div class="inline">
       <span id="cache-summary" class="muted">读取中…</span>
@@ -464,6 +478,9 @@ $("btn-proxy").onclick = async () => {
 
 function applyPayload(payload) {
   $("version").textContent = payload.version ? `v${payload.version}` : "";
+  if (typeof payload.codex_path === "string" && document.activeElement !== $("codex-path")) {
+    $("codex-path").value = payload.codex_path;
+  }
   if (!proxyDirty) applyProxy(payload.proxy);
   const editingId = state.editing?.id;
   state.profiles = payload.profiles;
@@ -474,18 +491,71 @@ function applyPayload(payload) {
   renderProfiles();
 }
 
+let codexBusy = false;
+
+function renderCodex(report) {
+  if (report.version) {
+    setStatus($("codex-status"), `可用 · ${report.version} · ${report.resolved || ""}`, "ok");
+    return;
+  }
+  const tried = (report.candidates || []).map((c) => c.path).slice(0, 3);
+  setStatus($("codex-status"),
+    `${report.error || "未找到 codex"}${tried.length ? `（已尝试 ${tried.join("、")}）` : ""}`, "err");
+}
+
+async function refreshCodex() {
+  try {
+    renderCodex(await invoke("codex_status"));
+  } catch (e) {
+    setStatus($("codex-status"), String(e), "err");
+  }
+}
+
+// One click: probe the known install locations and remember the first that answers, so a
+// user who only installed the Codex app never has to hunt down the path by hand.
+$("btn-codex-detect").onclick = async () => {
+  if (codexBusy) return;
+  codexBusy = true;
+  setStatus($("codex-status"), "正在探测常见安装位置…");
+  try {
+    const report = await invoke("codex_detect", { save: true });
+    $("codex-path").value = report.configured || "";
+    renderCodex(report);
+  } catch (e) {
+    setStatus($("codex-status"), String(e), "err");
+  } finally {
+    codexBusy = false;
+  }
+};
+
+$("btn-codex-save").onclick = async () => {
+  if (codexBusy) return;
+  codexBusy = true;
+  try {
+    const payload = await invoke("set_codex_path", { path: $("codex-path").value.trim() });
+    applyPayload(payload);
+    renderCodex(await invoke("codex_status"));
+  } catch (e) {
+    setStatus($("codex-status"), String(e), "err");
+  } finally {
+    codexBusy = false;
+  }
+};
+
 // The settings window stays alive between visits, so a profile added elsewhere (or an
 // instance switched from the picker) would otherwise leave a stale list on screen.
 document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState !== "visible") return;
   applyPayload(await invoke("boot_payload"));
   await refreshCache();
+  await refreshCodex();
 });
 
 (async () => {
   const payload = await invoke("boot_payload");
   applyPayload(payload);
   await refreshCache();
+  await refreshCodex();
 })();
 </script>
 </body>

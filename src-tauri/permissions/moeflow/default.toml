@@ -95,6 +95,21 @@ identifier = "allow-codex-run"
 description = "Enables the codex_run command"
 commands.allow = ["codex_run"]
 
+[[permission]]
+identifier = "allow-set-codex-path"
+description = "Enables the set_codex_path command"
+commands.allow = ["set_codex_path"]
+
+[[permission]]
+identifier = "allow-codex-status"
+description = "Enables the codex_status command"
+commands.allow = ["codex_status"]
+
+[[permission]]
+identifier = "allow-codex-detect"
+description = "Enables the codex_detect command"
+commands.allow = ["codex_detect"]
+
 # The set the capabilities actually reference. Note the `[default]` table form — writing
 # this as another `[[permission]]` produces a *permission* named "default" rather than a
 # permission set, and `default_permission` then resolves to null, which silently grants
@@ -120,4 +135,7 @@ permissions = [
   "allow-set-proxy-settings",
   "allow-codex-probe",
   "allow-codex-run",
+  "allow-codex-status",
+  "allow-codex-detect",
+  "allow-set-codex-path",
 ]

@@ -35,6 +35,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             moeflow_desktop_lib::codex::codex_run,
             moeflow_desktop_lib::codex::codex_probe,
+            moeflow_desktop_lib::codex::codex_status,
+            moeflow_desktop_lib::codex::codex_detect,
             moeflow_desktop_lib::commands::boot_payload,
             moeflow_desktop_lib::commands::probe_server,
             moeflow_desktop_lib::commands::upsert_profile,
@@ -51,6 +53,7 @@ fn main() {
             moeflow_desktop_lib::commands::open_launcher,
             moeflow_desktop_lib::commands::set_skip_launcher,
             moeflow_desktop_lib::commands::set_proxy_settings,
+            moeflow_desktop_lib::commands::set_codex_path,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

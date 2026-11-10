@@ -21,11 +21,23 @@ export function CodexTranslate() {
   useEffect(() => {
     if (!isDesktop()) return;
     let active = true;
-    invoke<string>('codex_probe').then(() => { if (active) setProbe(''); })
-      .catch((e) => { if (active) setProbe(`Codex 不可用：${describeError(e)}`); });
+    // Re-probe on focus: the path is chosen in Settings, and the dock is mounted long
+    // before that window closes, so a single mount-time probe would leave the button
+    // disabled until the app restarts.
+    const probe = () => invoke<string>('codex_probe')
+      .then(() => { if (active) setProbe(''); })
+      .catch((e) => {
+        if (active) setProbe(`Codex 不可用：${describeError(e)}　可在「设置 → 本地 Codex」里一键锁定`);
+      });
+    void probe();
+    window.addEventListener('focus', probe);
     // The dock is outside the router; polling also catches pushState navigation.
     const timer = window.setInterval(() => setPath(location.pathname), 300);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+      window.removeEventListener('focus', probe);
+    };
   }, []);
 
   useEffect(() => { if (!running.current) { setPreview(null); setOpen(false); } }, [path]);

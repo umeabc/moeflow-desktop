@@ -117,6 +117,13 @@ pub struct ProfileStore {
     /// exactly the surprise a multi-instance client should not spring on you.
     #[serde(default)]
     pub skip_launcher: bool,
+    /// Absolute path to the `codex` executable, chosen in Settings.
+    ///
+    /// Empty means "resolve automatically": `CODEX_BIN`, then the well-known install
+    /// locations, then `codex` on PATH. Stored as a plain string so a stale path degrades
+    /// to auto-detection instead of a hard error after the app moves.
+    #[serde(default)]
+    pub codex_path: String,
 }
 
 /// Result of probing a candidate server.
@@ -158,6 +165,7 @@ impl ProfileStore {
             proxy: crate::network::ProxySettings::default(),
             cache_limit_bytes: default_cache_limit(),
             skip_launcher: false,
+            codex_path: String::new(),
         }
     }
 
