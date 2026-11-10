@@ -44,7 +44,13 @@ export function CodexTranslate() {
       setLanguage(name ?? localStorage.getItem(`codex-language:${page.targetID}`) ?? '');
       setLanguageMode(name === null ? 'manual' : 'auto');
       setLanguagePath(startPath);
-    }).catch((e) => { if (active) setError(describeError(e)); });
+    }).catch((e) => {
+      if (!active) return;
+      // Falling back to the manual field keeps the dialog usable: a 401 or a missing
+      // endpoint must not leave it stuck at "读取中…" with both buttons disabled.
+      setLanguageMode('manual');
+      setError(describeError(e));
+    });
     return () => { active = false; };
   }, [open, path]);
 
@@ -124,7 +130,8 @@ export function CodexTranslate() {
       {writeFailed && <Button onClick={() => location.reload()}>刷新并核对已写入内容</Button>}
       {preview && <>
         <p>{preview.mode} · {preview.imageW} × {preview.imageH} px · 将新建 {preview.mode === 'label-only' ? preview.texts.length : 0} 个标签、
-          写入 {preview.mode === 'translate-only' ? preview.texts.length : 0} 条译文</p>
+          写入 {preview.mode === 'translate-only' ? preview.texts.length : 0} 条译文
+          {preview.replaced > 0 && <span style={{ color: '#d4380d' }}>，其中 {preview.replaced} 条会覆盖你已有的译文</span>}</p>
         <pre style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
           {JSON.stringify(preview, null, 2)}
         </pre>

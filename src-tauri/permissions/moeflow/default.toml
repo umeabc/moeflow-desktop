@@ -85,6 +85,16 @@ identifier = "allow-set-proxy-settings"
 description = "Enables the set_proxy_settings command"
 commands.allow = ["set_proxy_settings"]
 
+[[permission]]
+identifier = "allow-codex-probe"
+description = "Enables the codex_probe command"
+commands.allow = ["codex_probe"]
+
+[[permission]]
+identifier = "allow-codex-run"
+description = "Enables the codex_run command"
+commands.allow = ["codex_run"]
+
 # The set the capabilities actually reference. Note the `[default]` table form — writing
 # this as another `[[permission]]` produces a *permission* named "default" rather than a
 # permission set, and `default_permission` then resolves to null, which silently grants
@@ -108,4 +118,6 @@ permissions = [
   "allow-open-external",
   "allow-open-settings",
   "allow-set-proxy-settings",
+  "allow-codex-probe",
+  "allow-codex-run",
 ]

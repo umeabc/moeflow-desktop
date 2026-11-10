@@ -17,7 +17,7 @@ pub struct CodexRequest {
     timeout_ms: Option<u64>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct CodexReply {
     json: String,
     ms: u64,
@@ -81,7 +81,8 @@ pub async fn codex_run(req: CodexRequest) -> Result<CodexReply, String> {
         if let Some(model) = req.model { cmd.arg("-m").arg(model); }
         for (i, image) in req.images.iter().enumerate() {
             let bytes = base64::engine::general_purpose::STANDARD.decode(image)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                    format!("图片 base64 解码失败（{e}）：前端应发送不带前缀的标准 base64")))?;
             let path = dir.0.join(format!("image-{i}.png"));
             tokio::fs::write(&path, bytes).await?;
             cmd.arg("-i").arg(path);
@@ -124,4 +125,58 @@ pub async fn codex_run(req: CodexRequest) -> Result<CodexReply, String> {
         Ok(CodexReply { json, ms: started.elapsed().as_millis() as u64 })
     }.await;
     result.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2×2 PNG: enough for Codex to accept the attachment without any real content.
+    const PNG_2X2: &str = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP8//8/AwMDEwMYAAAkBgMBXaJOiAAAAABJRU5ErkJggg==";
+
+    /// End-to-end check of the whole command path against the real CLI.
+    ///
+    /// Ignored by default: it needs a logged-in `codex` on PATH, costs ~40 s of quota and
+    /// reaches the network. Everything else about this module is covered by reading the
+    /// wrapper; only an actual spawn proves the argument vector, the `-o` file and the
+    /// stdin handoff line up with the CLI we ship against.
+    #[ignore = "needs a logged-in codex CLI and spends quota"]
+    #[tokio::test]
+    async fn runs_codex_and_returns_schema_shaped_json() {
+        let probe = codex_probe().await.expect("codex should be installed");
+        assert!(probe.to_lowercase().contains("codex"), "unexpected version banner: {probe}");
+
+        let schema = r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}"#;
+        let reply = codex_run(CodexRequest {
+            prompt: "Return only JSON matching the schema. The answer is the two characters: ok".to_string(),
+            schema: schema.to_string(),
+            images: vec![PNG_2X2.to_string()],
+            model: None,
+            timeout_ms: Some(120_000),
+        })
+        .await
+        .expect("codex_run should succeed");
+
+        let parsed: serde_json::Value = serde_json::from_str(reply.json.trim())
+            .unwrap_or_else(|e| panic!("reply is not JSON ({e}): {}", reply.json));
+        assert!(parsed.get("answer").and_then(|v| v.as_str()).is_some(), "missing answer: {parsed}");
+        assert!(reply.ms > 0, "elapsed millis should be recorded");
+    }
+
+    /// Second concurrent call must be rejected instead of queueing behind a 40 s run.
+    #[tokio::test]
+    async fn rejects_a_second_concurrent_run() {
+        let guard = RUNNING.try_lock().expect("first lock should be free");
+        let err = codex_run(CodexRequest {
+            prompt: "x".to_string(),
+            schema: "{}".to_string(),
+            images: vec![],
+            model: None,
+            timeout_ms: Some(1_000),
+        })
+        .await
+        .expect_err("second run must be rejected");
+        assert!(err.contains("已有任务在跑"), "unexpected error: {err}");
+        drop(guard);
+    }
 }

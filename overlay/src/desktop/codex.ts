@@ -1,13 +1,17 @@
 import { invoke, sessionToken } from './bridge';
 
 export interface Page { fileID: string; targetID: string }
-interface Label { id: string; x: number; y: number; rank: number; content: string; kind?: string }
+interface Label {
+  id: string; x: number; y: number; rank: number; content: string; kind?: string;
+  /** The caller's own translation for this source in the current target, if any. */
+  my_translation?: { content?: string } | null;
+}
 export interface TextBox {
   rank: number; left: number; top: number; width: number; height: number;
   textLines: string[]; text: string; translated: string; comment: string;
 }
 interface Translation { rank: number; translated: string }
-export type Preview = { page: Page; imageW: number; imageH: number } & (
+export type Preview = { page: Page; imageW: number; imageH: number; snapshot: string[]; replaced: number } & (
   { mode: 'label-only'; texts: TextBox[] }
   | { mode: 'translate-only'; texts: Translation[]; sourceIDs: Record<number, string> }
 );
@@ -57,6 +61,17 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
     throw new Error('Codex JSON 缺少 texts 数组');
   }
   const mode = labels.length ? 'translate-only' : 'label-only';
+  if (mode === 'translate-only') {
+    // Ranks are the only identity the model sees. Two sources sharing a rank would let a
+    // translation land on the wrong one, so refuse the run instead of guessing.
+    const byRank = new Map<number, number>();
+    for (const label of labels) byRank.set(Number(label.rank), (byRank.get(Number(label.rank)) ?? 0) + 1);
+    const duplicated = [...byRank.entries()].filter(([, count]) => count > 1);
+    if (duplicated.length) {
+      throw new Error(`标号 rank 重复（${duplicated.map(([rank, count]) => `${rank}×${count}`).join('、')}），`
+        + '无法确定译文归属，请先在平台内整理标号再试');
+    }
+  }
   const rows = (raw as { texts: unknown[] }).texts;
   const seen = new Set<number>();
   let texts: TextBox[] = [];
@@ -93,9 +108,14 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
     || texts.some((t) => !Number.isInteger(t.rank) || t.rank < 1 || t.rank > texts.length))) {
     texts = texts.map((t, i) => ({ ...t, rank: i + 1 }));
   }
+  const snapshot = labels.map((label) => label.id);
+  const replaced = translations.filter((row) => {
+    const label = labels.find((item) => Number(item.rank) === row.rank);
+    return !!(label?.my_translation?.content ?? '').trim();
+  }).length;
   return mode === 'translate-only'
-    ? { mode, page, imageW: W, imageH: H, texts: translations.sort((a, b) => a.rank - b.rank), sourceIDs }
-    : { mode, page, imageW: W, imageH: H, texts: texts.sort((a, b) => a.rank - b.rank) };
+    ? { mode, page, imageW: W, imageH: H, snapshot, replaced, texts: translations.sort((a, b) => a.rank - b.rank), sourceIDs }
+    : { mode, page, imageW: W, imageH: H, snapshot, replaced: 0, texts: texts.sort((a, b) => a.rank - b.rank) };
 }
 
 function objectSchema(properties: Record<string, unknown>) {
@@ -157,6 +177,18 @@ export async function writePreview(page: Page, preview: Preview, landed: Landed,
     }
   };
   checkPage();
+  // The preview can be minutes old by the time the user presses 开始, and another client
+  // may have added or removed labels meanwhile. Compare identities before writing anything:
+  // creating labels on top of a changed page is the one mistake that cannot be undone here.
+  const fresh = await (await apiRequest(
+    `files/${page.fileID}/sources?target_id=${encodeURIComponent(page.targetID)}&paging=false`,
+  )).json();
+  if (!Array.isArray(fresh)) throw new Error('标签接口未返回数组');
+  const current = new Set<string>((fresh as Label[]).filter((s) => s.kind !== 'author').map((s) => s.id));
+  const expected = new Set(preview.snapshot);
+  if (current.size !== expected.size || [...expected].some((id) => !current.has(id))) {
+    throw new Error('标号在预览之后发生了变化（可能有人新建或删除了标签），已停止写入，请重新预览');
+  }
   for (let index = 0; index < preview.texts.length; index += 1) {
     checkPage();
     progress(`写入 ${index + 1}/${preview.texts.length}`);
