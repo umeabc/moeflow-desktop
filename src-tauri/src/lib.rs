@@ -43,17 +43,27 @@ pub struct ServerHandle {
 ///
 /// Packaged builds ship the upstream `build/` tree as a bundle resource; `tauri dev` reads
 /// it from the sibling checkout instead.
-pub fn web_root(app: &AppHandle) -> PathBuf {
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        let bundled = resource_dir.join("web");
-        if bundled.join("index.html").is_file() {
-            return bundled;
+#[derive(Clone)]
+pub struct WebRoots {
+    pub upstream: PathBuf,
+    pub irohamod: PathBuf,
+}
+
+pub fn web_root(app: &AppHandle) -> WebRoots {
+    let resolve = |resource: &str, fallback: &str| {
+        if let Ok(dir) = app.path().resource_dir() {
+            let bundled = dir.join(resource);
+            if bundled.join("index.html").is_file() {
+                return bundled;
+            }
         }
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(fallback);
+        path.canonicalize().unwrap_or(path)
+    };
+    WebRoots {
+        upstream: resolve("web", "../frontend/build"),
+        irohamod: resolve("web-irohamod", "../frontend-irohamod/build"),
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../frontend/build")
-        .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from("../frontend/build"))
 }
 
 /// Whether the user asked to skip the instance picker on startup.

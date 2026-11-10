@@ -62,7 +62,7 @@ pub struct RequestSnapshot {
 
 pub struct Ctx {
     live: RwLock<LiveProfile>,
-    pub web_root: PathBuf,
+    web_root: RwLock<PathBuf>,
     pub cache: Arc<MediaCache>,
     pub app: Option<tauri::AppHandle>,
     clients: SharedClients,
@@ -84,7 +84,7 @@ impl Ctx {
                 profile,
                 generation: 0,
             }),
-            web_root,
+            web_root: RwLock::new(web_root),
             cache,
             app,
             clients,
@@ -104,6 +104,15 @@ impl Ctx {
             known_origins: live.known_origins.clone(),
             generation: live.generation,
         }
+    }
+
+    pub fn update_web_root(&self, root: PathBuf) {
+        *self.web_root.write().unwrap_or_else(|p| p.into_inner()) = root;
+    }
+
+    fn web_root(&self) -> PathBuf {
+        let _publication = self.publication.read().unwrap_or_else(|p| p.into_inner());
+        self.web_root.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn update_profile(&self, profile: Profile) {
@@ -652,20 +661,21 @@ fn html_escape(text: &str) -> String {
 /// Serve the bundled frontend, falling back to `index.html` for unknown paths so that
 /// `BrowserRouter` deep links and the frontend's full-page `<a href>` navigations work.
 async fn static_file(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {
+    let web_root = ctx.web_root();
     let raw = uri.path().trim_start_matches('/');
     if raw.is_empty() {
-        return serve_index(&ctx).await;
+        return serve_path(&web_root.join("index.html"), true).await;
     }
 
     let Some(relative) = safe_relative_path(raw) else {
         return error_response(StatusCode::BAD_REQUEST, "非法路径");
     };
 
-    let candidate = ctx.web_root.join(&relative);
+    let candidate = web_root.join(&relative);
 
     // Second line of defence: the resolved file must actually live under the web root.
     // This also catches anything a future change to `safe_relative_path` might let past.
-    if let (Ok(root), Ok(resolved)) = (ctx.web_root.canonicalize(), candidate.canonicalize()) {
+    if let (Ok(root), Ok(resolved)) = (web_root.canonicalize(), candidate.canonicalize()) {
         if !resolved.starts_with(&root) {
             return error_response(StatusCode::BAD_REQUEST, "非法路径");
         }
@@ -682,7 +692,7 @@ async fn static_file(State(ctx): State<Arc<Ctx>>, uri: Uri) -> Response {
         return error_response(StatusCode::NOT_FOUND, "文件不存在");
     }
 
-    serve_index(&ctx).await
+    serve_path(&web_root.join("index.html"), true).await
 }
 
 /// Extensions that mean "this was a request for a file, not a client-side route".
@@ -733,10 +743,6 @@ fn safe_relative_path(raw: &str) -> Option<String> {
     }
 
     Some(decoded)
-}
-
-async fn serve_index(ctx: &Ctx) -> Response {
-    serve_path(&ctx.web_root.join("index.html"), true).await
 }
 
 async fn serve_path(path: &std::path::Path, no_cache: bool) -> Response {

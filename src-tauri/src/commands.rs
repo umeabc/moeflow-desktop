@@ -77,9 +77,16 @@ pub async fn probe_server(
     state: tauri::State<'_, AppState>,
     input: String,
 ) -> Result<ProbeResult, String> {
+    let client = state
+        .clients
+        .read()
+        .unwrap_or_else(|p| p.into_inner())
+        .probe
+        .clone();
     if let Some(preset) = profiles::find_preset(&input) {
         return Ok(ProbeResult {
             ok: true,
+            flavor: profiles::probe_flavor(&client, &preset.api_base).await,
             api_base: Some(preset.api_base),
             matched: Some(preset.host),
             message: format!("已匹配预设：{}", preset.name),
@@ -87,16 +94,11 @@ pub async fn probe_server(
         });
     }
     let candidates = profiles::api_base_candidates(&input);
-    let client = state
-        .clients
-        .read()
-        .unwrap_or_else(|p| p.into_inner())
-        .probe
-        .clone();
     for (index, candidate) in candidates.iter().enumerate() {
         if profiles::probe_ping_network(&client, candidate).await {
             return Ok(ProbeResult {
                 ok: true,
+                flavor: profiles::probe_flavor(&client, candidate).await,
                 api_base: Some(candidate.clone()),
                 matched: Some(candidate.clone()),
                 message: format!("连接成功：{candidate}"),
@@ -107,6 +109,7 @@ pub async fn probe_server(
     let fallback = profiles::default_api_base(&input);
     Ok(ProbeResult {
         ok: true,
+        flavor: None,
         api_base: Some(fallback.clone()),
         matched: None,
         message: format!("未找到可用后端，已设为默认：{fallback}"),

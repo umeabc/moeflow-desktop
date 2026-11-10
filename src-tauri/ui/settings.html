@@ -104,7 +104,7 @@
 
   label.field { display: block; margin-bottom: 10px; }
   label.field span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--text-muted); }
-  input[type=text], input[type=number] {
+  input[type=text], input[type=number], select {
     width: 100%; padding: 6px 9px; border-radius: 6px; font: inherit;
     border: 1px solid var(--input-border);
     background: var(--input-bg); color: var(--text);
@@ -177,6 +177,15 @@
       <span>媒体存储域名（可选，逗号分隔）</span>
       <input type="text" id="f-media" placeholder="https://cdn.example.org" />
     </label>
+    <label class="field">
+      <span>前端</span>
+      <select id="f-variant">
+        <option value="">自动（按实例探测）</option>
+        <option value="upstream">原版</option>
+        <option value="irohamod">irohamod</option>
+      </select>
+    </label>
+    <div class="muted" id="flavor-status" style="margin:-2px 0 10px">尚未探测</div>
     <div class="buttons">
       <button id="btn-probe">测试连接</button>
       <button class="primary" id="btn-save">保存</button>
@@ -287,6 +296,8 @@ function renderProfiles() {
 }
 
 function fillForm(p) {
+  $("f-variant").value = p?.variant ?? "";
+  $("flavor-status").textContent = "尚未探测";
   $("f-name").value = p?.name ?? "";
   $("f-site").value = p?.site_url ?? "";
   $("f-api").value = p?.api_base ?? "";
@@ -315,6 +326,8 @@ $("btn-probe").onclick = async () => {
   setStatus($("probe-status"), "探测中…");
   try {
     const result = await invoke("probe_server", { input });
+    if (state.editing !== editing || input !== ($("f-api").value.trim() || $("f-site").value.trim())) return;
+    $("flavor-status").textContent = "检测到：" + (result.flavor || "未知（按原版处理）");
     setStatus($("probe-status"), result.message, result.ok ? "ok" : "err");
     if (result.ok && result.api_base) {
       $("f-api").value = result.api_base;
@@ -355,6 +368,7 @@ $("btn-save").onclick = async () => {
     name: $("f-name").value.trim() || site || api,
     site_url: site || api,
     api_base: api,
+    variant: $("f-variant").value,
     port: state.editing?.port ?? 0,
     allow_invalid_certs: state.editing?.allow_invalid_certs ?? false,
     media_origins: $("f-media").value.split(",").map((s) => s.trim()).filter(Boolean),

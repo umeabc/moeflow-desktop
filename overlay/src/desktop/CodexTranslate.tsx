@@ -123,8 +123,8 @@ export function CodexTranslate() {
         <Button key="start" type="primary" loading={busy} disabled={busy || writeFailed || languageMode === 'loading' || !language.trim()} onClick={() => run(true)}>开始</Button>,
       ]}>
       <Typography.Paragraph>
-        无标签时只识别原文，开始会新建标签；有标签时只翻译（排除作者标签），译文写到已有标签上，不新建标签。
-        预览不会写入服务器；图片会交给本机 Codex CLI 处理。
+        无标签时识别原文并翻译，开始会新建标签并写入译文；有标签时只翻译，译文写到已有标签上、不新建标签。
+        作者标签始终不参与。预览不会写入服务器；图片会交给本机 Codex CLI 处理。
       </Typography.Paragraph>
       {languageMode === 'manual' ? <label>语言：手填
         <Input value={language} disabled={busy} placeholder="请输入当前目标语言" onChange={(e) => {
@@ -141,8 +141,8 @@ export function CodexTranslate() {
       {error && <Alert type="error" showIcon message={error} />}
       {writeFailed && <Button onClick={() => location.reload()}>刷新并核对已写入内容</Button>}
       {preview && <>
-        <p>{preview.mode} · {preview.imageW} × {preview.imageH} px · 将新建 {preview.mode === 'label-only' ? preview.texts.length : 0} 个标签、
-          写入 {preview.mode === 'translate-only' ? preview.texts.length : 0} 条译文
+        <p>{preview.mode} · {preview.imageW} × {preview.imageH} px · 将新建 {preview.mode === 'all' ? preview.texts.length : 0} 个标签、
+          写入 {preview.mode === 'translate-only' ? preview.texts.length : preview.texts.filter((t) => t.translated).length} 条译文
           {preview.replaced > 0 && <span style={{ color: '#d4380d' }}>，其中 {preview.replaced} 条会覆盖你已有的译文</span>}</p>
         <pre style={{ maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
           {JSON.stringify(preview, null, 2)}

@@ -45,6 +45,9 @@ pub fn default_cache_limit() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
+    /// Empty preserves automatic detection for profiles saved by older clients.
+    #[serde(default)]
+    pub variant: String,
     pub id: String,
     pub name: String,
     /// Human-facing site URL — opened in the system browser, never loaded by the shell.
@@ -129,6 +132,7 @@ pub struct ProfileStore {
 /// Result of probing a candidate server.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeResult {
+    pub flavor: Option<String>,
     pub ok: bool,
     /// Resolved API base, when a probe succeeded.
     pub api_base: Option<String>,
@@ -147,6 +151,7 @@ impl ProfileStore {
     /// 「添加实例」, which probes the address and fills in the real API base.
     pub fn with_presets() -> Self {
         let profiles = vec![Profile {
+            variant: String::new(),
             id: "moetran".into(),
             name: "尨译 MoeTran".into(),
             site_url: "https://moetran.com".into(),
@@ -502,6 +507,7 @@ mod tests {
 
     fn profile(site: &str, api: &str) -> Profile {
         Profile {
+            variant: String::new(),
             id: "t".into(),
             name: "t".into(),
             site_url: site.into(),
@@ -672,6 +678,7 @@ mod tests {
     fn ensure_ports_splits_duplicates_and_keeps_the_first() {
         let mut store = ProfileStore::with_presets();
         let second = Profile {
+            variant: String::new(),
             id: "second".into(),
             name: "second".into(),
             site_url: "https://example.org".into(),
@@ -719,6 +726,7 @@ mod tests {
         store.profiles[0].port = 0;
         store.ensure_ports();
         let first = Profile {
+            variant: String::new(),
             id: "second".into(),
             name: "second".into(),
             site_url: "https://example.org".into(),
@@ -741,6 +749,7 @@ mod tests {
         // ...and the user adds a third instance.
         let used: Vec<u16> = store.profiles.iter().map(|p| p.port).collect();
         store.profiles.push(Profile {
+            variant: String::new(),
             id: "third".into(),
             name: "third".into(),
             site_url: "https://third.example".into(),
@@ -761,5 +770,56 @@ mod tests {
             !original.contains(&after[original.len()]),
             "the new profile must not land on a live port: {after:?}"
         );
+    }
+}
+
+/// Unknown responses deliberately retain the upstream frontend for older servers.
+pub fn parse_flavor(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    value.get("flavor")?.as_str().map(str::to_owned)
+}
+
+pub fn uses_irohamod(variant: &str, flavor: Option<&str>) -> bool {
+    match variant {
+        "irohamod" => true,
+        "" => flavor == Some("irohamod"),
+        _ => false,
+    }
+}
+
+pub async fn probe_flavor(client: &crate::network::NetworkClient, base: &str) -> Option<String> {
+    // Bound the whole exchange, including reading the body, so activation stays usable.
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let response = client.get(&format!("{}/v1/site/flavor", base.trim_end_matches('/')))
+            .send().await.ok()?;
+        if !response.status().is_success() { return None; }
+        parse_flavor(&response.text().await.ok()?)
+    }).await.ok().flatten()
+}
+
+#[cfg(test)]
+mod flavor_tests {
+    use super::*;
+    #[test]
+    fn flavor_json_is_optional_and_typed() {
+        assert_eq!(parse_flavor(r#"{"flavor":"irohamod"}"#).as_deref(), Some("irohamod"));
+        for body in ["{}", "garbage", "<html/>", r#"{"flavor":3}"#, "null"] {
+            assert_eq!(parse_flavor(body), None);
+        }
+    }
+    #[test]
+    fn manual_choice_wins_and_unknown_defaults_to_upstream() {
+        assert!(uses_irohamod("irohamod", None));
+        assert!(!uses_irohamod("upstream", Some("irohamod")));
+        assert!(uses_irohamod("", Some("irohamod")));
+        for flavor in [None, Some("upstream"), Some("other")] {
+            assert!(!uses_irohamod("", flavor));
+        }
+    }
+    #[test]
+    fn old_profiles_default_to_auto() {
+        let p: Profile = serde_json::from_str(r#"{"id":"old","name":"Old","site_url":"https://example.org","api_base":"https://example.org/api"}"#).unwrap();
+        assert_eq!(p.variant, "");
+        assert_eq!(p.port, 0);
     }
 }

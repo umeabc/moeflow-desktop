@@ -999,6 +999,7 @@ mod tests {
                 calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             };
             let profile = Profile {
+                variant: String::new(),
                 id: "test".into(),
                 name: "test".into(),
                 site_url: format!("{site}/workbench"),

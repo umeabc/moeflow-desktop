@@ -17,7 +17,7 @@ pub struct AppState {
     mutation: tokio::sync::Mutex<()>,
     pub clients: SharedClients,
     publication: Arc<RwLock<()>>,
-    runtime: Mutex<Option<(Option<tauri::AppHandle>, PathBuf)>>,
+    runtime: Mutex<Option<(Option<tauri::AppHandle>, crate::WebRoots)>>,
 }
 
 impl AppState {
@@ -57,7 +57,7 @@ impl AppState {
     pub async fn start_servers(
         &self,
         app: Option<tauri::AppHandle>,
-        web_root: PathBuf,
+        web_root: crate::WebRoots,
     ) -> Result<(), String> {
         let _gate = self.mutation.lock().await;
         let runtime = (app, web_root);
@@ -69,7 +69,7 @@ impl AppState {
     async fn publish(
         &self,
         mut candidate: ProfileStore,
-        runtime: &(Option<tauri::AppHandle>, PathBuf),
+        runtime: &(Option<tauri::AppHandle>, crate::WebRoots),
     ) -> Result<(), String> {
         let ids: HashSet<_> = candidate.profiles.iter().map(|p| p.id.clone()).collect();
         if ids.len() != candidate.profiles.len() {
@@ -82,6 +82,34 @@ impl AppState {
         } else {
             None
         };
+        // Use the candidate proxy policy when publishing a proxy change.
+        let bundle = replacement.clone().unwrap_or_else(||
+            self.clients.read().unwrap_or_else(|p| p.into_inner()).clone());
+        // Probe every auto-detected profile concurrently: activation is on the startup path,
+        // and three instances probed one after another would add a 3 s timeout each for a
+        // server that happens to be unreachable.
+        let flavors = futures_util::future::join_all(candidate.profiles.iter().map(|profile| {
+            let client = bundle.client(profile.allow_invalid_certs);
+            let base = profile.api_base.clone();
+            let variant = profile.variant.clone();
+            async move {
+                if variant.is_empty() {
+                    profiles::probe_flavor(&client, &base).await
+                } else {
+                    None
+                }
+            }
+        }))
+        .await;
+        let mut roots = HashMap::new();
+        for (profile, flavor) in candidate.profiles.iter().zip(flavors) {
+            let root = if profiles::uses_irohamod(&profile.variant, flavor.as_deref()) {
+                &runtime.1.irohamod
+            } else {
+                &runtime.1.upstream
+            };
+            roots.insert(profile.id.clone(), root.clone());
+        }
         let existing: HashMap<String, u16> = self
             .servers
             .lock()
@@ -108,7 +136,7 @@ impl AppState {
             used.insert(profile.port);
             let ctx = Arc::new(Ctx::new(
                 profile.clone(),
-                runtime.1.clone(),
+                roots[&profile.id].clone(),
                 self.cache.clone(),
                 runtime.0.clone(),
                 self.clients.clone(),
@@ -126,6 +154,7 @@ impl AppState {
             for profile in &candidate.profiles {
                 if let Some(handle) = servers.get(&profile.id) {
                     handle.ctx.update_profile(profile.clone());
+                    handle.ctx.update_web_root(roots[&profile.id].clone());
                 }
             }
             if let Some(bundle) = replacement {

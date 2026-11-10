@@ -17,6 +17,7 @@ impl Fixture {
         let mut store = ProfileStore::with_presets();
         store.proxy.mode = ProxyMode::Direct;
         store.profiles[0].port = 0;
+        store.profiles[0].variant = "upstream".into();
         let state = AppState::new(
             root.join("config"),
             store,
@@ -24,7 +25,7 @@ impl Fixture {
             0,
         )
         .unwrap();
-        state.start_servers(None, root.join("web")).await.unwrap();
+        state.start_servers(None, crate::WebRoots { upstream: root.join("web"), irohamod: root.join("web-irohamod") }).await.unwrap();
         Self { state, root }
     }
     fn ctx(&self, id: &str) -> Arc<Ctx> {
@@ -300,4 +301,35 @@ async fn proxy_changes_apply_live_while_existing_requests_finish_with_old_bundle
     assert_eq!(fixture.state.store_snapshot().proxy.mode, ProxyMode::Direct);
     first_task.await.unwrap();
     second_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn frontend_choice_is_per_profile_and_updates_existing_listener() {
+    let fixture = Fixture::new().await;
+    for (dir, text) in [("web", "upstream"), ("web-irohamod", "irohamod")] {
+        std::fs::create_dir_all(fixture.root.join(dir)).unwrap();
+        std::fs::write(fixture.root.join(dir).join("index.html"), text).unwrap();
+    }
+    let first = fixture.state.active().unwrap();
+    let mut second = first.clone();
+    second.id = "fork".into();
+    second.variant = "irohamod".into();
+    fixture.state.upsert(second).await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for (id, expected) in [("moetran", "upstream"), ("fork", "irohamod")] {
+        let port = fixture.state.store_snapshot().get(id).unwrap().port;
+        let body = client.get(format!("http://127.0.0.1:{port}/"))
+            .send().await.unwrap().text().await.unwrap();
+        assert_eq!(body, expected);
+    }
+    let ctx = fixture.ctx(&first.id);
+    let port = first.port;
+    let mut changed = first;
+    changed.variant = "irohamod".into();
+    fixture.state.upsert(changed).await.unwrap();
+    assert!(Arc::ptr_eq(&ctx, &fixture.ctx("moetran")));
+    assert_eq!(fixture.state.active().unwrap().port, port);
+    let body = client.get(format!("http://127.0.0.1:{port}/"))
+        .send().await.unwrap().text().await.unwrap();
+    assert_eq!(body, "irohamod");
 }

@@ -12,7 +12,7 @@ export interface TextBox {
 }
 interface Translation { rank: number; translated: string }
 export type Preview = { page: Page; imageW: number; imageH: number; snapshot: string[]; replaced: number } & (
-  { mode: 'label-only'; texts: TextBox[] }
+  { mode: 'all'; texts: TextBox[] }
   | { mode: 'translate-only'; texts: Translation[]; sourceIDs: Record<number, string> }
 );
 
@@ -60,7 +60,9 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
   if (!raw || typeof raw !== 'object' || !Array.isArray((raw as { texts?: unknown }).texts)) {
     throw new Error('Codex JSON 缺少 texts 数组');
   }
-  const mode = labels.length ? 'translate-only' : 'label-only';
+  // No labels on the page means "recognise and translate in one pass"; with labels there
+  // is nothing to box, so only the translation is written.
+  const mode = labels.length ? 'translate-only' : 'all';
   if (mode === 'translate-only') {
     // Ranks are the only identity the model sees. Two sources sharing a rank would let a
     // translation land on the wrong one, so refuse the run instead of guessing.
@@ -85,7 +87,7 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
     // Existing ranks are identities: never renumber a translation onto another label.
     if (mode === 'translate-only' && (!label || !Number.isInteger(rank) || seen.has(rank))) continue;
     seen.add(rank);
-    const translated = mode === 'translate-only' ? string(r.translated) : '';
+    const translated = mode === 'translate-only' || mode === 'all' ? string(r.translated) : '';
     if (mode === 'translate-only') {
       if (label && translated) {
         translations.push({ rank, translated });
@@ -104,7 +106,7 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
       textLines, text, translated, comment: translated,
     });
   }
-  if (mode === 'label-only' && (new Set(texts.map((t) => t.rank)).size !== texts.length
+  if (mode === 'all' && (new Set(texts.map((t) => t.rank)).size !== texts.length
     || texts.some((t) => !Number.isInteger(t.rank) || t.rank < 1 || t.rank > texts.length))) {
     texts = texts.map((t, i) => ({ ...t, rank: i + 1 }));
   }
@@ -115,7 +117,7 @@ function normalize(raw: unknown, labels: Label[], W: number, H: number, page: Pa
   }).length;
   return mode === 'translate-only'
     ? { mode, page, imageW: W, imageH: H, snapshot, replaced, texts: translations.sort((a, b) => a.rank - b.rank), sourceIDs }
-    : { mode, page, imageW: W, imageH: H, snapshot, replaced: 0, texts: texts.sort((a, b) => a.rank - b.rank) };
+    : { mode: 'all' as const, page, imageW: W, imageH: H, snapshot, replaced: 0, texts: texts.sort((a, b) => a.rank - b.rank) };
 }
 
 function objectSchema(properties: Record<string, unknown>) {
@@ -152,7 +154,7 @@ export async function recognize(page: Page, language: string): Promise<Preview> 
   const text = { type: 'string' };
   const item = labels.length ? objectSchema({ rank: integer, translated: text }) : objectSchema({
     rank: integer, left: integer, top: integer, width: integer, height: integer,
-    textLines: { type: 'array', items: text }, text, translated: { type: 'string', enum: [''] }, comment: text,
+    textLines: { type: 'array', items: text }, text, translated: text, comment: text,
   });
   const texts = { type: 'array', items: item };
   const schema = labels.length ? objectSchema({ texts }) : objectSchema({ imageW: integer, imageH: integer, texts });
@@ -160,7 +162,9 @@ export async function recognize(page: Page, language: string): Promise<Preview> 
     + (labels.length
       ? `Translate the following labels into ${JSON.stringify(language)}. Keep their exact ranks. The attached image is context only; do not create labels.\n`
         + labels.map((label) => `- label ${label.rank}: ${JSON.stringify(label.content)}`).join('\n')
-      : `Detect and transcribe text regions in reading order. Use integer pixel boxes within this image, ranks 1..n, textLines and joined text. Set translated to an empty string. Report imageW=${W}, imageH=${H}. Do not translate.`);
+      : `Detect every text region in reading order, transcribe it, and translate it into ${JSON.stringify(language)}. `
+        + `Use integer pixel boxes within this image, ranks 1..n, textLines and joined text; put the translation in "translated" `
+        + `and the same text in "comment". Report imageW=${W}, imageH=${H}. Never translate the author/label text that is not visible on the artwork.`);
   const reply = await invoke<{ json: string; ms: number }>('codex_run', {
     req: { prompt, schema: JSON.stringify(schema), images: [png], model: null, timeout_ms: 180000 },
   });
@@ -202,13 +206,25 @@ export async function writePreview(page: Page, preview: Preview, landed: Landed,
       landed.translations += 1;
     } else {
       const text = preview.texts[index];
-      await apiRequest(`files/${page.fileID}/sources`, {
+      const response = await apiRequest(`files/${page.fileID}/sources`, {
         x: clamp((text.left + text.width / 2) / preview.imageW, 0, 1),
         y: clamp((text.top + text.height / 2) / preview.imageH, 0, 1),
         content: text.text, rank: text.rank,
       });
       // Count an acknowledged write without depending on its response body.
       landed.labels += 1;
+      if (text.translated) {
+        const source = await response.json().catch(() => {
+          throw new Error(`HTTP ${response.status}：标签已创建，但返回的 JSON 无法解析`);
+        }) as { id?: string | number };
+        if (source?.id === undefined || source.id === null || source.id === '') {
+          throw new Error(`HTTP ${response.status}：已创建标签，但响应缺少 id，无法写入译文`);
+        }
+        await apiRequest(`sources/${encodeURIComponent(String(source.id))}/translations`, {
+          content: text.translated, target_id: page.targetID,
+        });
+        landed.translations += 1;
+      }
     }
   }
 }

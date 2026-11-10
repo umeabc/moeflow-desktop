@@ -3,7 +3,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VARIANT="upstream"
+if [ "${1:-}" = "--variant" ] && [ "${2:-}" = "irohamod" ] && [ "$#" = 2 ]; then
+  VARIANT="irohamod"
+elif [ "$#" != 0 ]; then
+  echo "Usage: $0 [--variant irohamod]" >&2
+  exit 1
+fi
 FRONTEND="$ROOT/frontend"
+if [ "$VARIANT" = "irohamod" ]; then
+  bash "$ROOT/scripts/fetch-frontend-irohamod.sh"
+  FRONTEND="$ROOT/frontend-irohamod"
+fi
 
 if [ ! -d "$FRONTEND" ]; then
   echo "frontend/ is missing — run scripts/fetch-frontend.sh first" >&2
@@ -21,7 +32,26 @@ fi
 
 # Apply the desktop integration patches. They touch two files, one line each, so a failure
 # here means upstream moved one of them — see patches/README.md and rebase.
-if [ "${SKIP_PATCHES:-0}" != "1" ]; then
+if [ "$VARIANT" = "irohamod" ]; then
+  # The fork already serves PS scripts locally; only the desktop mount belongs here.
+  node --input-type=module <<'JS'
+import fs from 'node:fs';
+const file = 'src/index.tsx';
+const mount = "import './desktop/mount';";
+const anchor = "const debugLogger = createDebugLogger('app');";
+let source = fs.readFileSync(file, 'utf8');
+if (!source.includes(mount)) {
+  if (!source.includes(anchor)) throw new Error('irohamod mount anchor moved');
+  fs.writeFileSync(file, source.replace(anchor, mount + '\n\n' + anchor));
+}
+// A Windows junction avoids copying the fork checkout's large dependency tree.
+if (!fs.existsSync('node_modules')) {
+  const path = await import('node:path');
+  const source = path.resolve('..', process.env.IROHAMOD_FRONTEND || '../moeflow-irohamod/irohamod/frontend', 'node_modules');
+  if (fs.existsSync(source)) fs.symlinkSync(source, 'node_modules', process.platform === 'win32' ? 'junction' : 'dir');
+}
+JS
+elif [ "${SKIP_PATCHES:-0}" != "1" ]; then
   for patch in "$ROOT"/patches/[0-9]*.patch; do
     [ -e "$patch" ] || continue
     if git apply --check "$patch" 2>/dev/null; then
@@ -55,8 +85,12 @@ fi
 
 # Keeps src/locales/{en,zh-cn}.json in step with messages.yaml. The JSON files are
 # committed upstream, so this is a freshness step rather than a hard prerequisite.
-echo "==> npm run build:locale"
-npm run build:locale
+if [ "${SKIP_LOCALE:-0}" != "1" ]; then
+  echo "==> npm run build:locale"
+  npm run build:locale
+else
+  echo "==> using the vendored locale JSON (SKIP_LOCALE=1)"
+fi
 
 echo "==> npm run build"
 npm run build
@@ -76,4 +110,8 @@ if ! grep -q 'src="/assets/' "$FRONTEND/build/index.html"; then
   exit 1
 fi
 
-echo "==> frontend bundle ready at frontend/build"
+compgen -G "$FRONTEND/build/assets/index-*.js" >/dev/null || {
+  echo "Missing index JS bundle in $FRONTEND/build/assets" >&2
+  exit 1
+}
+echo "==> $VARIANT frontend bundle ready at $FRONTEND/build"
