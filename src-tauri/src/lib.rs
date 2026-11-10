@@ -9,6 +9,7 @@
 //! frontend works — root-absolute asset paths, SPA deep links, the `token` cookie and the
 //! `Authorization` header all behave normally.
 
+pub mod codex;
 pub mod commands;
 pub mod config;
 pub mod download;

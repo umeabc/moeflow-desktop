@@ -33,6 +33,8 @@ fn main() {
             show_main(app);
         }))
         .invoke_handler(tauri::generate_handler![
+            moeflow_desktop_lib::codex::codex_run,
+            moeflow_desktop_lib::codex::codex_probe,
             moeflow_desktop_lib::commands::boot_payload,
             moeflow_desktop_lib::commands::probe_server,
             moeflow_desktop_lib::commands::upsert_profile,

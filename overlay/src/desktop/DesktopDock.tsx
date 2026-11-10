@@ -25,6 +25,7 @@ import {
   targetLabel,
 } from './bridge';
 import './desktop.css';
+import { CodexTranslate } from './CodexTranslate';
 
 const { Text, Paragraph } = Typography;
 
@@ -188,6 +189,7 @@ export function DesktopDock() {
         >
           本地导出
         </button>
+        <CodexTranslate />
       </div>
 
       <Modal
