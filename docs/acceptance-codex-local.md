@@ -71,3 +71,15 @@ MT="C:/Program Files (x86)/Windows Kits/10/bin/10.0.22621.0/x64/mt.exe"
 本机实测 `status("")` → `C:\Users\Administrator\Codex/_internal/app/resources/codex.exe`，
 版本 `codex-cli 0.163.0-alpha.11.1`（`codex::tests::detects_and_probes_the_local_install`）。
 dock 现在在窗口重新获得焦点时重试探测，改完设置无需重启。
+
+## 真机联调：双前端探测（2026-11-11，测试机已更新后端）
+
+| 实例 | `GET /v1/site/flavor` | 客户端实际服务的 JS | 判定 |
+| --- | --- | --- | --- |
+| caifan → `https://moeflow.basmc.org/api` | `200 {"flavor":"irohamod","name":"BASMC-Moeflow","version":"iroha16-fix11"}` | `index-CMwqSJTT.js`，sha256 `289d45a5…` | **irohamod 包**（与 `frontend-irohamod/build` 逐字节一致） |
+| 尨译 → `https://api.moetran.com` | `404` | `index-Btls65hu.js`，sha256 `99e77639…` | **原版包**（与 `frontend/build` 逐字节一致） |
+
+两个实例同时运行在 14653 / 47100 端口，同一进程内各自服务不同前端，说明选择是按实例而不是全局的。
+点开 caifan 后登录页正常渲染（irohamod 站点品牌与布局），dock 三按钮在位，非图片页时「本地 Codex 翻译」按预期置灰。
+
+未覆盖：登录后的图片翻译页交互（需要站点账号），以及 irohamod 后端在真实数据下的 `/v1/site/flavor` 失败路径。
