@@ -1,42 +1,85 @@
 /* Styles for the desktop overlay. Plain CSS under .mf-dock so it cannot collide with the
    app's own emotion/antd styles. */
 
-.mf-dock__bar {
+.mf-nav {
   position: fixed;
-  right: 24px;
-  bottom: 24px;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   z-index: 1200;
   display: flex;
-  gap: 6px;
-  padding: 5px;
-  border-radius: 24px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(6px);
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 4px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.04);
 }
 
 @media (prefers-color-scheme: dark) {
-  .mf-dock__bar {
-    background: rgba(34, 39, 46, 0.92);
+  .mf-nav {
+    background: rgba(30, 34, 40, 0.9);
+    border-color: rgba(255, 255, 255, 0.06);
   }
 }
 
-.mf-dock__bar-button {
-  padding: 7px 16px;
+/* Narrow windows: the rail would eat into the canvas, so it collapses to icons. */
+@media (max-width: 900px) {
+  .mf-nav__label { display: none; }
+  .mf-nav__item { width: 40px; }
+}
+
+.mf-nav__item {
+  width: 52px;
+  padding: 7px 2px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   border: 0;
-  border-radius: 19px;
+  border-radius: 11px;
   background: transparent;
-  color: #1f2328;
-  font-size: 13px;
+  color: #3b4149;
   font-family: inherit;
+  font-size: 11px;
+  line-height: 1.2;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mf-nav__item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.mf-nav__item.is-primary {
+  color: #e0435c;
+}
+
+.mf-nav__item.is-disabled,
+.mf-nav__item:disabled {
+  color: #a0a6ad;
+  cursor: not-allowed;
+}
+
+.mf-nav__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+}
+
+.mf-nav__label {
+  white-space: nowrap;
 }
 
 @media (prefers-color-scheme: dark) {
-  .mf-dock__bar-button {
-    color: #f0f2f5;
-  }
+  .mf-nav__item { color: #e6e9ee; }
+  .mf-nav__item:hover:not(:disabled) { background: rgba(255, 255, 255, 0.08); }
+  .mf-nav__item.is-primary { color: #ff7185; }
+  .mf-nav__item.is-disabled,
+  .mf-nav__item:disabled { color: #6b7178; }
 }
 
 .mf-dock__bar-button:hover {

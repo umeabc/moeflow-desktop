@@ -25,6 +25,7 @@ import {
   targetLabel,
 } from './bridge';
 import './desktop.css';
+import { Icons, NavItem } from './NavItem';
 import { CodexTranslate } from './CodexTranslate';
 
 const { Text, Paragraph } = Typography;
@@ -174,23 +175,28 @@ export function DesktopDock() {
 
   return (
     <>
-      <div className="mf-dock__bar">
-        <button
-          className="mf-dock__bar-button"
-          onClick={() => runAction('打开实例选择', () => shell.openLauncher())}
+      <nav className="mf-nav" aria-label="桌面功能">
+        <NavItem
+          label="实例"
           title="切换服务器实例 / 添加实例"
-        >
-          实例
-        </button>
-        <button
-          className="mf-dock__bar-button is-primary"
-          onClick={() => setOpen(true)}
+          icon={Icons.server}
+          onClick={() => runAction('打开实例选择', () => shell.openLauncher())}
+        />
+        <NavItem
+          label="导出"
           title="在本地生成 LabelPlus txt 与成品 zip"
-        >
-          本地导出
-        </button>
+          icon={Icons.export}
+          primary
+          onClick={() => setOpen(true)}
+        />
         <CodexTranslate />
-      </div>
+        <NavItem
+          label="设置"
+          title="代理、缓存、本地 Codex 路径"
+          icon={Icons.settings}
+          onClick={() => runAction('打开设置', () => shell.openSettings())}
+        />
+      </nav>
 
       <Modal
         title="本地导出"

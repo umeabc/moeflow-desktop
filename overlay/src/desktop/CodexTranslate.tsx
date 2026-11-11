@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Modal, Typography } from 'antd';
 import { describeError, invoke, isDesktop } from './bridge';
 import { currentImagePage, Preview, recognize, resolveLanguage, writePreview } from './codex';
+import { Icons, NavItem } from './NavItem';
 
 export function CodexTranslate() {
   const [path, setPath] = useState(location.pathname);
@@ -108,13 +109,13 @@ export function CodexTranslate() {
   }
 
   return <>
-    <span title={hint || '本地 Codex 翻译'}>
-      <button className="mf-dock__bar-button" disabled={!!hint}
-        style={hint ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-        onClick={() => { setLanguageMode('loading'); setOpen(true); setPreview(null); setError(''); setProgress(''); }}>
-        本地 Codex 翻译
-      </button>
-    </span>
+      <NavItem
+        label="翻译"
+        title={hint || '本地 Codex 翻译'}
+        icon={Icons.codex}
+        disabled={!!hint}
+        onClick={() => { setLanguageMode('loading'); setOpen(true); setPreview(null); setError(''); setProgress(''); }}
+      />
     <Modal title="本地 Codex 翻译" open={open} width={600}
       closable={!busy} maskClosable={!busy} keyboard={!busy} onCancel={() => setOpen(false)}
       footer={[
