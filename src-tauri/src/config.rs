@@ -307,6 +307,17 @@ impl AppState {
         .await
     }
 
+    pub async fn set_dsh_path(&self, path: String) -> Result<(), String> {
+        self.mutate(move |store| { store.dsh_path = path; Ok(()) }).await
+    }
+
+    pub async fn set_translate_backend(&self, backend: String) -> Result<(), String> {
+        if !matches!(backend.as_str(), "" | "codex" | "dsh") {
+            return Err("仅翻译后端必须为 codex 或 dsh".into());
+        }
+        self.mutate(move |store| { store.translate_backend = backend; Ok(()) }).await
+    }
+
     pub async fn set_limit(&self, bytes: u64) -> Result<(), String> {
         self.mutate(move |store| {
             store.cache_limit_bytes = bytes;

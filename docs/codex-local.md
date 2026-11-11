@@ -103,3 +103,25 @@ JS 完成归一化，信任实际 canvas 尺寸而非模型返回的尺寸。
 - 路由支持标准 UUID 对 UUID，或两段不含连字符的 ID；其他 ID 编码需要调整解析规则。
 - 当前工作环境没有 Rust 工具链、bun 或 node_modules，仅完成静态检查，没有编译或运行验证。
   优先核对 Tauri IPC 注册、Windows 原生 Codex 启动、API 响应形状、语言解析及已有 source 的译文写入。
+
+## 第二个后端：dsh（仅翻译）
+
+`dsh` 是纯文本命令行（`dsh --profile headless "<task>"`，一次任务 ≈ 5 s），**没有视觉**，
+也没有 `--output-schema`。因此分工是硬性的：
+
+| 页面状态 | 用的后端 | 原因 |
+| --- | --- | --- |
+| 已有标签（`translate-only`） | 设置里的「仅翻译后端」，`codex` 或 `dsh` | 原文在标签列表里，不需要看图 |
+| 没有标签（`all`，要建标签） | 只能是 `codex` | 建标签必须看图，dsh 做不到 |
+
+选 `dsh` 却遇到无标签页面时，前端会直接报错说明原因，而不是静默什么都不做。
+
+**怎么跑**：npm 的 `dsh.cmd` 不能直接 spawn（要经过 shell，而提示词是用户内容），所以解析到
+`%APPDATA%\npm\node_modules\@deepseek-ai\dsh\lib\bin.js`，用 `node` 启动；`node` 也按
+`NODE_BIN` → `%ProgramFiles%\nodejs\node.exe` → `%LOCALAPPDATA%\Programs\nodejs\node.exe` → PATH 的顺序解析。
+
+**契约差异**：dsh 没有 schema 参数，JSON Schema 直接嵌在提示词里；输出从 stdout 里按括号配对扫描提取，
+解析失败会用一句「ONLY the JSON object:」重试一次。提示词走 argv，所以超过约 30000 字符会明确报错
+（Windows 命令行长度上限），而不是被悄悄截断。单次超时 120 s，同样只允许一个任务在跑。
+
+设置页的「本地 dsh」区块与「本地 Codex」同构：路径、一键锁定、保存并检测、可用版本与解析结果。

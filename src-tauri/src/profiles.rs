@@ -127,6 +127,11 @@ pub struct ProfileStore {
     /// to auto-detection instead of a hard error after the app moves.
     #[serde(default)]
     pub codex_path: String,
+    #[serde(default)]
+    pub dsh_path: String,
+    /// Empty preserves the Codex default for existing profiles.
+    #[serde(default)]
+    pub translate_backend: String,
 }
 
 /// Result of probing a candidate server.
@@ -171,6 +176,8 @@ impl ProfileStore {
             cache_limit_bytes: default_cache_limit(),
             skip_launcher: false,
             codex_path: String::new(),
+            dsh_path: String::new(),
+            translate_backend: String::new(),
         }
     }
 
@@ -407,6 +414,16 @@ pub async fn probe_ping_network(client: &crate::network::NetworkClient, api_base
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_profiles_default_to_codex() {
+        let mut value = serde_json::to_value(ProfileStore::with_presets()).unwrap();
+        value.as_object_mut().unwrap().remove("dsh_path");
+        value.as_object_mut().unwrap().remove("translate_backend");
+        let store: ProfileStore = serde_json::from_value(value).unwrap();
+        assert!(store.dsh_path.is_empty());
+        assert!(store.translate_backend.is_empty());
+    }
 
     #[test]
     fn candidates_try_api_prefix_then_root_then_api_subdomain() {

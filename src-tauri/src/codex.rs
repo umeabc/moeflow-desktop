@@ -20,17 +20,17 @@ static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[derive(serde::Deserialize)]
 pub struct CodexRequest {
-    prompt: String,
-    schema: String,
-    images: Vec<String>,
-    model: Option<String>,
-    timeout_ms: Option<u64>,
+    pub prompt: String,
+    pub schema: String,
+    pub images: Vec<String>,
+    pub model: Option<String>,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct CodexReply {
-    json: String,
-    ms: u64,
+    pub json: String,
+    pub ms: u64,
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Modal, Typography } from 'antd';
 import { describeError, invoke, isDesktop } from './bridge';
-import { currentImagePage, Preview, recognize, resolveLanguage, writePreview } from './codex';
+import { Backend, backendLabel, configuredBackend, currentImagePage, Preview, recognize, resolveLanguage, writePreview } from './codex';
 import { Icons, NavItem } from './NavItem';
 
 export function CodexTranslate() {
   const [path, setPath] = useState(location.pathname);
-  const [probe, setProbe] = useState('正在检测 Codex…');
+  const [probe, setProbe] = useState('正在检测本地后端…');
+  const [backend, setBackend] = useState<Backend>('codex');
+  const lastBackend = useRef<Backend>('codex');
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const running = useRef(false);
@@ -25,10 +27,17 @@ export function CodexTranslate() {
     // Re-probe on focus: the path is chosen in Settings, and the dock is mounted long
     // before that window closes, so a single mount-time probe would leave the button
     // disabled until the app restarts.
-    const probe = () => invoke<string>('codex_probe')
+    const probe = () => configuredBackend().then(async (selected) => {
+      if (active && !running.current) {
+        setBackend(selected);
+        if (lastBackend.current !== selected) setPreview(null);
+        lastBackend.current = selected;
+      }
+      await invoke<string>(`${selected}_probe`);
+    })
       .then(() => { if (active) setProbe(''); })
       .catch((e) => {
-        if (active) setProbe(`Codex 不可用：${describeError(e)}　可在「设置 → 本地 Codex」里一键锁定`);
+        if (active) setProbe(`本地后端不可用：${describeError(e)}　可在「设置 → 本地 Codex / 本地 dsh」里一键锁定`);
       });
     void probe();
     window.addEventListener('focus', probe);
@@ -83,22 +92,29 @@ export function CodexTranslate() {
     setError('');
     const landed = { labels: 0, translations: 0 };
     let writing = false;
+    let runBackend = backend;
+    const reportProgress = (message: string) => setProgress(`后端：${backendLabel(runBackend)} · ${message}`);
     try {
-      setProgress('识别中');
-      const result = (previewPath.current === startPath && preview) || await recognize(page, language.trim());
+      setProgress(`后端：${backendLabel(backend)} · 准备中`);
+      const result = (previewPath.current === startPath && preview) || await recognize(page, language.trim(), (selected) => {
+        runBackend = selected;
+        lastBackend.current = selected;
+        setBackend(selected);
+        setProgress(`后端：${backendLabel(selected)} · 处理中`);
+      });
       if (location.pathname !== startPath) throw new Error('页面已切换，请重新打开对话框');
       setPreview(result);
       previewPath.current = startPath;
       if (write) {
         writing = true;
-        await writePreview(page, result, landed, setProgress);
-        setProgress('完成');
+        await writePreview(page, result, landed, reportProgress);
+        reportProgress('完成');
         location.reload();
       } else {
-        setProgress('预览完成，未写入');
+        reportProgress('预览完成，未写入');
       }
     } catch (e) {
-      setProgress('已停止');
+      reportProgress('已停止');
       setError(`${describeError(e)}。已确认写入 ${landed.labels} 个标签、${landed.translations} 条译文。`
         + (writing ? ' 写入不是事务；请求中断时最后一项也可能已保存。请刷新核对后再操作，勿直接重复执行。' : ''));
       if (writing) setWriteFailed(true);
@@ -111,21 +127,22 @@ export function CodexTranslate() {
   return <>
       <NavItem
         label="翻译"
-        title={hint || '本地 Codex 翻译'}
+        title={hint || '本地翻译'}
         icon={Icons.codex}
         disabled={!!hint}
         onClick={() => { setLanguageMode('loading'); setOpen(true); setPreview(null); setError(''); setProgress(''); }}
       />
-    <Modal title="本地 Codex 翻译" open={open} width={600}
+    <Modal title="本地翻译" open={open} width={600}
       closable={!busy} maskClosable={!busy} keyboard={!busy} onCancel={() => setOpen(false)}
       footer={[
         <Button key="cancel" disabled={busy} onClick={() => setOpen(false)}>取消</Button>,
         <Button key="preview" disabled={busy || writeFailed || languageMode === 'loading' || !language.trim()} onClick={() => run(false)}>预览</Button>,
         <Button key="start" type="primary" loading={busy} disabled={busy || writeFailed || languageMode === 'loading' || !language.trim()} onClick={() => run(true)}>开始</Button>,
       ]}>
+      <Typography.Paragraph>后端：{backendLabel(backend)}</Typography.Paragraph>
       <Typography.Paragraph>
         无标签时识别原文并翻译，开始会新建标签并写入译文；有标签时只翻译，译文写到已有标签上、不新建标签。
-        作者标签始终不参与。预览不会写入服务器；图片会交给本机 Codex CLI 处理。
+        作者标签始终不参与。预览不会写入服务器；codex 可识别图片，dsh 仅翻译已有标签。
       </Typography.Paragraph>
       {languageMode === 'manual' ? <label>语言：手填
         <Input value={language} disabled={busy} placeholder="请输入当前目标语言" onChange={(e) => {

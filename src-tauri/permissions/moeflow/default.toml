@@ -110,6 +110,36 @@ identifier = "allow-codex-detect"
 description = "Enables the codex_detect command"
 commands.allow = ["codex_detect"]
 
+[[permission]]
+identifier = "allow-dsh-run"
+description = "Enables the dsh_run command"
+commands.allow = ["dsh_run"]
+
+[[permission]]
+identifier = "allow-dsh-probe"
+description = "Enables the dsh_probe command"
+commands.allow = ["dsh_probe"]
+
+[[permission]]
+identifier = "allow-dsh-status"
+description = "Enables the dsh_status command"
+commands.allow = ["dsh_status"]
+
+[[permission]]
+identifier = "allow-dsh-detect"
+description = "Enables the dsh_detect command"
+commands.allow = ["dsh_detect"]
+
+[[permission]]
+identifier = "allow-set-dsh-path"
+description = "Enables the set_dsh_path command"
+commands.allow = ["set_dsh_path"]
+
+[[permission]]
+identifier = "allow-set-translate-backend"
+description = "Enables the set_translate_backend command"
+commands.allow = ["set_translate_backend"]
+
 # The set the capabilities actually reference. Note the `[default]` table form — writing
 # this as another `[[permission]]` produces a *permission* named "default" rather than a
 # permission set, and `default_permission` then resolves to null, which silently grants
@@ -117,6 +147,13 @@ commands.allow = ["codex_detect"]
 [default]
 description = "All MoeFlow desktop IPC commands used by the overlay and the settings window."
 permissions = [
+  "allow-dsh-run",
+  "allow-dsh-probe",
+  "allow-dsh-status",
+  "allow-dsh-detect",
+  "allow-set-dsh-path",
+  "allow-set-translate-backend",
+
   "allow-boot-payload",
   "allow-set-skip-launcher",
   "allow-open-launcher",
