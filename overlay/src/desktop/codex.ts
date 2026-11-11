@@ -124,11 +124,11 @@ function objectSchema(properties: Record<string, unknown>) {
   return { type: 'object', properties, required: Object.keys(properties), additionalProperties: false };
 }
 
-export type Backend = 'codex' | 'dsh';
-export const backendLabel = (backend: Backend) => backend === 'dsh' ? 'dsh（仅翻译）' : 'codex';
+export type Backend = 'codex' | 'dsh' | 'claude';
+export const backendLabel = (backend: Backend) => backend === 'codex' ? 'codex' : `${backend}（仅翻译）`;
 export async function configuredBackend(): Promise<Backend> {
   const settings = await invoke<{ translate_backend?: string }>('boot_payload');
-  return settings.translate_backend === 'dsh' ? 'dsh' : 'codex';
+  return settings.translate_backend === 'dsh' || settings.translate_backend === 'claude' ? settings.translate_backend : 'codex';
 }
 
 export async function recognize(page: Page, language: string, onBackend?: (backend: Backend) => void): Promise<Preview> {
@@ -137,7 +137,7 @@ export async function recognize(page: Page, language: string, onBackend?: (backe
   const labels: Label[] = sources.filter((s: Label) => s.kind !== 'author');
   const backend = await configuredBackend();
   onBackend?.(backend);
-  if (!labels.length && backend === 'dsh') throw new Error('dsh 无视觉，不能识别图片或创建标签；请先添加标签，或将仅翻译后端改为 codex');
+  if (!labels.length && backend !== 'codex') throw new Error(`${backend === 'dsh' ? 'dsh 无视觉' : 'Claude 视觉尚未验证'}，不能识别图片或创建标签；请先添加标签，或将翻译后端改为 codex`);
   let png = '';
   let W = 1;
   let H = 1;
@@ -179,7 +179,7 @@ export async function recognize(page: Page, language: string, onBackend?: (backe
         + `Use integer pixel boxes within this image, ranks 1..n, textLines and joined text; put the translation in "translated" `
         + `and the same text in "comment". Report imageW=${W}, imageH=${H}. Never translate the author/label text that is not visible on the artwork.`);
   const reply = await invoke<{ json: string; ms: number }>(`${backend}_run`, {
-    req: { prompt, schema: JSON.stringify(schema), images: backend === 'dsh' ? [] : [png], model: null, timeout_ms: backend === 'dsh' ? 120000 : 180000 },
+    req: { prompt, schema: JSON.stringify(schema), images: backend === 'codex' ? [png] : [], model: null, timeout_ms: backend === 'dsh' ? 120000 : 180000 },
   });
   return normalize(JSON.parse(reply.json), labels, W, H, page);
 }

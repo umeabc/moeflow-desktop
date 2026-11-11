@@ -227,9 +227,9 @@
   </div>
 
   <div class="card">
-    <h2>仅翻译后端</h2>
-    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option></select>
-    <p class="muted">dsh 无视觉，不能创建标签；仅支持翻译已有标签。</p>
+    <h2>翻译后端</h2>
+    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="claude">claude（仅翻译）</option></select>
+    <p class="muted">dsh 无视觉；Claude 视觉尚未验证。两者仅支持翻译已有标签。</p>
     <div class="status" id="backend-status" role="status" aria-live="polite"></div>
   </div>
 
@@ -245,6 +245,20 @@
       <button id="btn-dsh-save">保存并检测</button>
     </div>
     <div class="status" id="dsh-status" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="card">
+    <h2>本地 Claude</h2>
+    <p class="muted">通过本机 Claude Code 翻译已有标签，不经过 MoeFlow 服务器。视觉尚未验证；需先配置 Claude 的模型服务。留空则自动检测。</p>
+    <label class="field">
+      <span>claude.exe 路径</span>
+      <input type="text" id="claude-path" placeholder="留空自动检测，例如 %USERPROFILE%\Downloads\claude-offline-packages-windows\node_modules\@anthropic-ai\claude-code\bin\claude.exe" />
+    </label>
+    <div class="buttons">
+      <button id="btn-claude-detect" class="primary">一键锁定</button>
+      <button id="btn-claude-save">保存并检测</button>
+    </div>
+    <div class="status" id="claude-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="card">
@@ -516,6 +530,7 @@ function applyPayload(payload) {
   if (typeof payload.codex_path === "string" && document.activeElement !== $("codex-path")) {
     $("codex-path").value = payload.codex_path;
   }
+  if (document.activeElement !== $("claude-path")) $("claude-path").value = payload.claude_path || "";
   if (document.activeElement !== $("dsh-path")) $("dsh-path").value = payload.dsh_path || "";
   if (document.activeElement !== $("translate-backend")) $("translate-backend").value = payload.translate_backend || "codex";
   if (!proxyDirty) applyProxy(payload.proxy);
@@ -630,6 +645,57 @@ $("btn-dsh-save").onclick = async () => {
   }
 };
 
+let claudeBusy = false;
+
+function renderClaude(report) {
+  if (report.version) {
+    setStatus($("claude-status"), `可用 · ${report.version} · ${report.resolved || ""}`, "ok");
+    return;
+  }
+  const tried = (report.candidates || []).map((c) => c.path).slice(0, 3);
+  setStatus($("claude-status"),
+    `${report.error || "未找到 claude"}${tried.length ? `（已尝试 ${tried.join("、")}）` : ""}`, "err");
+}
+
+async function refreshClaude() {
+  try {
+    renderClaude(await invoke("claude_status"));
+  } catch (e) {
+    setStatus($("claude-status"), String(e), "err");
+  }
+}
+
+// One click: probe the known install locations and remember the first that answers, so a
+// user who installed claude through npm never has to hunt down claude.exe by hand.
+$("btn-claude-detect").onclick = async () => {
+  if (claudeBusy) return;
+  claudeBusy = true;
+  setStatus($("claude-status"), "正在探测常见安装位置…");
+  try {
+    const report = await invoke("claude_detect", { save: true });
+    $("claude-path").value = report.configured || "";
+    renderClaude(report);
+  } catch (e) {
+    setStatus($("claude-status"), String(e), "err");
+  } finally {
+    claudeBusy = false;
+  }
+};
+
+$("btn-claude-save").onclick = async () => {
+  if (claudeBusy) return;
+  claudeBusy = true;
+  try {
+    const payload = await invoke("set_claude_path", { path: $("claude-path").value.trim() });
+    applyPayload(payload);
+    renderClaude(await invoke("claude_status"));
+  } catch (e) {
+    setStatus($("claude-status"), String(e), "err");
+  } finally {
+    claudeBusy = false;
+  }
+};
+
 $("translate-backend").onchange = async () => {
   try {
     applyPayload(await invoke("set_translate_backend", { backend: $("translate-backend").value }));
@@ -645,6 +711,7 @@ document.addEventListener("visibilitychange", async () => {
   await refreshCache();
   await refreshCodex();
   await refreshDsh();
+  await refreshClaude();
 });
 
 (async () => {
@@ -653,6 +720,7 @@ document.addEventListener("visibilitychange", async () => {
   await refreshCache();
   await refreshCodex();
   await refreshDsh();
+  await refreshClaude();
 })();
 </script>
 </body>

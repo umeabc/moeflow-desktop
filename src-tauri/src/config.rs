@@ -307,13 +307,17 @@ impl AppState {
         .await
     }
 
+    pub async fn set_claude_path(&self, path: String) -> Result<(), String> {
+        self.mutate(move |store| { store.claude_path = path; Ok(()) }).await
+    }
+
     pub async fn set_dsh_path(&self, path: String) -> Result<(), String> {
         self.mutate(move |store| { store.dsh_path = path; Ok(()) }).await
     }
 
     pub async fn set_translate_backend(&self, backend: String) -> Result<(), String> {
-        if !matches!(backend.as_str(), "" | "codex" | "dsh") {
-            return Err("仅翻译后端必须为 codex 或 dsh".into());
+        if !matches!(backend.as_str(), "" | "codex" | "dsh" | "claude") {
+            return Err("翻译后端必须为 codex、dsh 或 claude".into());
         }
         self.mutate(move |store| { store.translate_backend = backend; Ok(()) }).await
     }

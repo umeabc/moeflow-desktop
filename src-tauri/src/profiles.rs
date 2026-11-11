@@ -129,6 +129,8 @@ pub struct ProfileStore {
     pub codex_path: String,
     #[serde(default)]
     pub dsh_path: String,
+    #[serde(default)]
+    pub claude_path: String,
     /// Empty preserves the Codex default for existing profiles.
     #[serde(default)]
     pub translate_backend: String,
@@ -177,6 +179,7 @@ impl ProfileStore {
             skip_launcher: false,
             codex_path: String::new(),
             dsh_path: String::new(),
+            claude_path: String::new(),
             translate_backend: String::new(),
         }
     }
@@ -419,9 +422,11 @@ mod tests {
     fn old_profiles_default_to_codex() {
         let mut value = serde_json::to_value(ProfileStore::with_presets()).unwrap();
         value.as_object_mut().unwrap().remove("dsh_path");
+        value.as_object_mut().unwrap().remove("claude_path");
         value.as_object_mut().unwrap().remove("translate_backend");
         let store: ProfileStore = serde_json::from_value(value).unwrap();
         assert!(store.dsh_path.is_empty());
+        assert!(store.claude_path.is_empty());
         assert!(store.translate_backend.is_empty());
     }
 

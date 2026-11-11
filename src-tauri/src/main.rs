@@ -33,6 +33,11 @@ fn main() {
             show_main(app);
         }))
         .invoke_handler(tauri::generate_handler![
+            moeflow_desktop_lib::claude::claude_run,
+            moeflow_desktop_lib::claude::claude_probe,
+            moeflow_desktop_lib::claude::claude_status,
+            moeflow_desktop_lib::claude::claude_detect,
+            moeflow_desktop_lib::commands::set_claude_path,
             moeflow_desktop_lib::dsh::dsh_run,
             moeflow_desktop_lib::dsh::dsh_probe,
             moeflow_desktop_lib::dsh::dsh_status,

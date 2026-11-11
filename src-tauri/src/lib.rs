@@ -11,6 +11,7 @@
 
 pub mod codex;
 pub mod dsh;
+pub mod claude;
 pub mod commands;
 pub mod config;
 pub mod download;

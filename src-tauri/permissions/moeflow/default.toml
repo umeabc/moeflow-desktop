@@ -140,6 +140,31 @@ identifier = "allow-set-translate-backend"
 description = "Enables the set_translate_backend command"
 commands.allow = ["set_translate_backend"]
 
+[[permission]]
+identifier = "allow-claude-run"
+description = "Enables the claude_run command"
+commands.allow = ["claude_run"]
+
+[[permission]]
+identifier = "allow-claude-probe"
+description = "Enables the claude_probe command"
+commands.allow = ["claude_probe"]
+
+[[permission]]
+identifier = "allow-claude-status"
+description = "Enables the claude_status command"
+commands.allow = ["claude_status"]
+
+[[permission]]
+identifier = "allow-claude-detect"
+description = "Enables the claude_detect command"
+commands.allow = ["claude_detect"]
+
+[[permission]]
+identifier = "allow-set-claude-path"
+description = "Enables the set_claude_path command"
+commands.allow = ["set_claude_path"]
+
 # The set the capabilities actually reference. Note the `[default]` table form — writing
 # this as another `[[permission]]` produces a *permission* named "default" rather than a
 # permission set, and `default_permission` then resolves to null, which silently grants
@@ -147,6 +172,12 @@ commands.allow = ["set_translate_backend"]
 [default]
 description = "All MoeFlow desktop IPC commands used by the overlay and the settings window."
 permissions = [
+  "allow-claude-run",
+  "allow-claude-probe",
+  "allow-claude-status",
+  "allow-claude-detect",
+  "allow-set-claude-path",
+
   "allow-dsh-run",
   "allow-dsh-probe",
   "allow-dsh-status",

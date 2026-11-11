@@ -19,6 +19,7 @@ pub struct BootPayload {
     /// Empty means "detect automatically"; prefilled by the settings page.
     pub codex_path: String,
     pub dsh_path: String,
+    pub claude_path: String,
     pub translate_backend: String,
 }
 
@@ -34,6 +35,7 @@ pub fn payload(state: &AppState) -> BootPayload {
         proxy: store.proxy,
         codex_path: store.codex_path,
         dsh_path: store.dsh_path,
+        claude_path: store.claude_path,
         translate_backend: store.translate_backend,
         version: env!("CARGO_PKG_VERSION"),
     }
@@ -68,6 +70,12 @@ pub async fn set_codex_path(
     path: String,
 ) -> Result<BootPayload, String> {
     state.set_codex_path(path).await?;
+    Ok(payload(&state))
+}
+
+#[tauri::command]
+pub async fn set_claude_path(state: tauri::State<'_, AppState>, path: String) -> Result<BootPayload, String> {
+    state.set_claude_path(path).await?;
     Ok(payload(&state))
 }
 
