@@ -130,7 +130,15 @@ pub struct ProfileStore {
     #[serde(default)]
     pub dsh_path: String,
     #[serde(default)]
-    pub claude_path: String,
+    pub agy_path: String,
+    /// Empty model IDs preserve the backend's own default.
+    #[serde(default)]
+    pub codex_model: String,
+    #[serde(default)]
+    pub agy_model: String,
+    /// Persist discovery so translation never needs to launch model discovery.
+    #[serde(default)]
+    pub model_catalogs: std::collections::BTreeMap<String, Vec<crate::models::LocalModel>>,
     /// Empty preserves the Codex default for existing profiles.
     #[serde(default)]
     pub translate_backend: String,
@@ -179,7 +187,10 @@ impl ProfileStore {
             skip_launcher: false,
             codex_path: String::new(),
             dsh_path: String::new(),
-            claude_path: String::new(),
+            agy_path: String::new(),
+            codex_model: String::new(),
+            agy_model: String::new(),
+            model_catalogs: Default::default(),
             translate_backend: String::new(),
         }
     }
@@ -422,11 +433,11 @@ mod tests {
     fn old_profiles_default_to_codex() {
         let mut value = serde_json::to_value(ProfileStore::with_presets()).unwrap();
         value.as_object_mut().unwrap().remove("dsh_path");
-        value.as_object_mut().unwrap().remove("claude_path");
+        value.as_object_mut().unwrap().remove("agy_path");
         value.as_object_mut().unwrap().remove("translate_backend");
         let store: ProfileStore = serde_json::from_value(value).unwrap();
         assert!(store.dsh_path.is_empty());
-        assert!(store.claude_path.is_empty());
+        assert!(store.agy_path.is_empty());
         assert!(store.translate_backend.is_empty());
     }
 

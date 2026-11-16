@@ -333,3 +333,20 @@ async fn frontend_choice_is_per_profile_and_updates_existing_listener() {
         .send().await.unwrap().text().await.unwrap();
     assert_eq!(body, "irohamod");
 }
+
+#[tokio::test]
+async fn unsupported_model_choices_are_never_persisted() {
+    let f = Fixture::new().await;
+    assert!(f.state.set_agy_path("agy.cmd".into()).await.is_err());
+    assert!(f.state.set_agy_path("agy.ps1".into()).await.is_err());
+    assert!(f.state.set_backend_model("dsh".into(), "unsupported".into()).await.is_err());
+    assert!(f.state.set_backend_model("codex".into(), "ccs-route/model".into()).await.is_err());
+    assert!(f.state.set_backend_model("agy".into(), "unknown".into()).await.is_err());
+    f.state.save_model_catalog("agy".into(), vec![crate::models::LocalModel {
+        id:"verified-model".into(), label:None, source:"fixture ACP catalog".into(), vision:None,
+    }]).await.unwrap();
+    f.state.set_backend_model("agy".into(), "verified-model".into()).await.unwrap();
+    let saved = serde_json::to_value(ProfileStore::load(&f.state.config_dir)).unwrap();
+    assert_eq!(saved["agy_model"], "verified-model");
+    assert!(saved.get("dsh_model").is_none());
+}

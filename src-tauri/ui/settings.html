@@ -224,12 +224,17 @@
       <button id="btn-codex-save">保存并检测</button>
     </div>
     <div class="status" id="codex-status" role="status" aria-live="polite"></div>
+    <label class="field"><span>模型</span><select id="codex-model"><option value="">默认（使用后端配置）</option></select></label>
+    <label class="field"><span>自定义模型 ID（优先于下拉选择）</span><input type="text" id="codex-model-custom" placeholder="留空使用下拉选择" /></label>
+    <div class="buttons"><button id="codex-model-refresh">刷新模型目录</button><button id="codex-model-save">保存模型</button></div>
+    <p class="muted">本地目录不保证 provider 可达。视觉能力仅依据明确元数据；未知模型允许尝试，但仍受后端图片支持限制。</p>
+    <div class="status" id="codex-model-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="card">
     <h2>翻译后端</h2>
-    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="claude">claude（仅翻译）</option></select>
-    <p class="muted">dsh 无视觉；Claude 视觉尚未验证。两者仅支持翻译已有标签。</p>
+    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="agy">agy ACP</option></select>
+    <p class="muted">dsh 仅翻译已有标签。agy 仅 gemini-3.8-flash-high（服务版本 1.5.9）实测可接收图片；其他模型仅翻译已有标签。</p>
     <div class="status" id="backend-status" role="status" aria-live="polite"></div>
   </div>
 
@@ -245,20 +250,31 @@
       <button id="btn-dsh-save">保存并检测</button>
     </div>
     <div class="status" id="dsh-status" role="status" aria-live="polite"></div>
+    <label class="field"><span>模型</span><select id="dsh-model"><option value="">默认（使用后端配置）</option></select></label>
+    <label class="field"><span>自定义模型 ID（优先于下拉选择）</span><input type="text" id="dsh-model-custom" placeholder="留空使用下拉选择" /></label>
+    <div class="buttons"><button id="dsh-model-refresh">刷新模型目录</button><button id="dsh-model-save">保存模型</button></div>
+    <p class="muted">本地目录不保证 provider 可达。视觉能力仅依据明确元数据；未知模型允许尝试，但仍受后端图片支持限制。</p>
+    <p class="muted">dsh 单次运行模型覆盖尚未验证，此处仅展示目录；请在 dsh profile 中配置默认模型。</p>
+    <div class="status" id="dsh-model-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="card">
-    <h2>本地 Claude</h2>
-    <p class="muted">通过本机 Claude Code 翻译已有标签，不经过 MoeFlow 服务器。视觉尚未验证；需先配置 Claude 的模型服务。留空则自动检测。</p>
+    <h2>本地 agy</h2>
+    <p class="muted">通过本机 agy ACP 翻译已有标签，不经过 MoeFlow 服务器。请先配置 agy 的模型服务。仅已实测模型支持图片。留空则自动检测。</p>
     <label class="field">
-      <span>claude.exe 路径</span>
-      <input type="text" id="claude-path" placeholder="留空自动检测，例如 %USERPROFILE%\Downloads\claude-offline-packages-windows\node_modules\@anthropic-ai\claude-code\bin\claude.exe" />
+      <span>agy.exe 路径</span>
+      <input type="text" id="agy-path" placeholder="留空自动检测，例如 C:/Users/Administrator/Documents/deepseek-harness/default-workspace/agy-bridge/dist-tunnel/agy.exe" />
     </label>
     <div class="buttons">
-      <button id="btn-claude-detect" class="primary">一键锁定</button>
-      <button id="btn-claude-save">保存并检测</button>
+      <button id="btn-agy-detect" class="primary">一键锁定</button>
+      <button id="btn-agy-save">保存并检测</button>
     </div>
-    <div class="status" id="claude-status" role="status" aria-live="polite"></div>
+    <div class="status" id="agy-status" role="status" aria-live="polite"></div>
+    <label class="field"><span>模型</span><select id="agy-model"><option value="">默认（使用后端配置）</option></select></label>
+    <label class="field"><span>自定义模型 ID（优先于下拉选择）</span><input type="text" id="agy-model-custom" placeholder="留空使用下拉选择" /></label>
+    <div class="buttons"><button id="agy-model-refresh">刷新模型目录</button><button id="agy-model-save">保存模型</button></div>
+    <p class="muted">本地目录不保证 provider 可达。视觉能力仅依据明确元数据；未知模型允许尝试，但仍受后端图片支持限制。</p>
+    <div class="status" id="agy-model-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="card">
@@ -527,10 +543,11 @@ $("btn-proxy").onclick = async () => {
 
 function applyPayload(payload) {
   $("version").textContent = payload.version ? `v${payload.version}` : "";
+  applyModels(payload);
   if (typeof payload.codex_path === "string" && document.activeElement !== $("codex-path")) {
     $("codex-path").value = payload.codex_path;
   }
-  if (document.activeElement !== $("claude-path")) $("claude-path").value = payload.claude_path || "";
+  if (document.activeElement !== $("agy-path")) $("agy-path").value = payload.agy_path || "";
   if (document.activeElement !== $("dsh-path")) $("dsh-path").value = payload.dsh_path || "";
   if (document.activeElement !== $("translate-backend")) $("translate-backend").value = payload.translate_backend || "codex";
   if (!proxyDirty) applyProxy(payload.proxy);
@@ -541,6 +558,58 @@ function applyPayload(payload) {
   state.editing = payload.profiles.find((p) => p.id === editingId) ?? null;
   fillForm(state.editing);
   renderProfiles();
+}
+
+// Discovery runs only after an explicit Settings refresh; translation uses persisted metadata.
+const modelCatalogs = {};
+function visionLabel(model) { return model.vision === true ? "支持视觉" : model.vision === false ? "仅文本" : "视觉未知"; }
+function renderModels(backend, selected) {
+  const select = $(`${backend}-model`);
+  select.replaceChildren(new Option("默认（使用后端配置）", ""));
+  for (const model of modelCatalogs[backend] || []) {
+    if (model.id.startsWith("ccs-")) continue;
+    const option = new Option(`${model.label || model.id}${model.label && model.label !== model.id ? ` · ${model.id}` : ""} · ${visionLabel(model)}`, model.id);
+    option.title = model.source;
+    select.add(option);
+  }
+  const known = [...select.options].some((option) => option.value === selected);
+  select.value = known ? selected : "";
+  $(`${backend}-model-custom`).value = known ? "" : selected;
+}
+function applyModels(payload) {
+  for (const backend of ["codex", "dsh", "agy"]) {
+    modelCatalogs[backend] = payload.model_catalogs?.[backend] || [];
+    if (document.activeElement !== $(`${backend}-model-custom`) && document.activeElement !== $(`${backend}-model`)) {
+      renderModels(backend, payload[`${backend}_model`] || "");
+    }
+  }
+}
+for (const backend of ["codex", "dsh", "agy"]) {
+  $(`${backend}-model`).onchange = () => { $(`${backend}-model-custom`).value = ""; };
+  $(`${backend}-model-refresh`).onclick = async () => {
+    const button = $(`${backend}-model-refresh`);
+    button.disabled = true;
+    const selected = $(`${backend}-model-custom`).value.trim() || $(`${backend}-model`).value;
+    try {
+      modelCatalogs[backend] = await invoke(`${backend}_models`);
+      renderModels(backend, selected);
+      setStatus($(`${backend}-model-status`), `发现 ${modelCatalogs[backend].length} 个模型（${backend === "agy" ? "ACP 实时目录" : "本地目录"}，未逐一验证推理可达性）`, "ok");
+    } catch (e) { setStatus($(`${backend}-model-status`), String(e), "err"); }
+    finally { button.disabled = false; }
+  };
+  $(`${backend}-model-save`).onclick = async () => {
+    try {
+      const model = $(`${backend}-model-custom`).value.trim() || $(`${backend}-model`).value;
+      applyPayload(await invoke("set_backend_model", { backend, model }));
+      setStatus($(`${backend}-model-status`), "模型已保存", "ok");
+    } catch (e) { setStatus($(`${backend}-model-status`), String(e), "err"); }
+  };
+  if (backend === "dsh") {
+    $(`${backend}-model`).disabled = true;
+    $(`${backend}-model-custom`).disabled = true;
+    $(`${backend}-model-save`).disabled = true;
+    setStatus($(`${backend}-model-status`), "dsh 尚未验证单次运行模型覆盖；此处仅展示目录。请在 dsh profile 中设置默认模型。");
+  }
 }
 
 let codexBusy = false;
@@ -645,54 +714,53 @@ $("btn-dsh-save").onclick = async () => {
   }
 };
 
-let claudeBusy = false;
+let agyBusy = false;
 
-function renderClaude(report) {
+function renderAgy(report) {
   if (report.version) {
-    setStatus($("claude-status"), `可用 · ${report.version} · ${report.resolved || ""}`, "ok");
+    setStatus($("agy-status"), `可用 · ${report.version} · ${report.resolved || ""}`, "ok");
     return;
   }
   const tried = (report.candidates || []).map((c) => c.path).slice(0, 3);
-  setStatus($("claude-status"),
-    `${report.error || "未找到 claude"}${tried.length ? `（已尝试 ${tried.join("、")}）` : ""}`, "err");
+  setStatus($("agy-status"),
+    `${report.error || "未找到 agy"}${tried.length ? `（已尝试 ${tried.join("、")}）` : ""}`, "err");
 }
 
-async function refreshClaude() {
+async function refreshAgy() {
   try {
-    renderClaude(await invoke("claude_status"));
+    renderAgy(await invoke("agy_status"));
   } catch (e) {
-    setStatus($("claude-status"), String(e), "err");
+    setStatus($("agy-status"), String(e), "err");
   }
 }
 
-// One click: probe the known install locations and remember the first that answers, so a
-// user who installed claude through npm never has to hunt down claude.exe by hand.
-$("btn-claude-detect").onclick = async () => {
-  if (claudeBusy) return;
-  claudeBusy = true;
-  setStatus($("claude-status"), "正在探测常见安装位置…");
+// Keep detection in the same precedence order as execution.
+$("btn-agy-detect").onclick = async () => {
+  if (agyBusy) return;
+  agyBusy = true;
+  setStatus($("agy-status"), "正在探测常见安装位置…");
   try {
-    const report = await invoke("claude_detect", { save: true });
-    $("claude-path").value = report.configured || "";
-    renderClaude(report);
+    const report = await invoke("agy_detect", { save: true });
+    $("agy-path").value = report.configured || "";
+    renderAgy(report);
   } catch (e) {
-    setStatus($("claude-status"), String(e), "err");
+    setStatus($("agy-status"), String(e), "err");
   } finally {
-    claudeBusy = false;
+    agyBusy = false;
   }
 };
 
-$("btn-claude-save").onclick = async () => {
-  if (claudeBusy) return;
-  claudeBusy = true;
+$("btn-agy-save").onclick = async () => {
+  if (agyBusy) return;
+  agyBusy = true;
   try {
-    const payload = await invoke("set_claude_path", { path: $("claude-path").value.trim() });
+    const payload = await invoke("set_agy_path", { path: $("agy-path").value.trim() });
     applyPayload(payload);
-    renderClaude(await invoke("claude_status"));
+    renderAgy(await invoke("agy_status"));
   } catch (e) {
-    setStatus($("claude-status"), String(e), "err");
+    setStatus($("agy-status"), String(e), "err");
   } finally {
-    claudeBusy = false;
+    agyBusy = false;
   }
 };
 
@@ -711,7 +779,7 @@ document.addEventListener("visibilitychange", async () => {
   await refreshCache();
   await refreshCodex();
   await refreshDsh();
-  await refreshClaude();
+  await refreshAgy();
 });
 
 (async () => {
@@ -720,7 +788,7 @@ document.addEventListener("visibilitychange", async () => {
   await refreshCache();
   await refreshCodex();
   await refreshDsh();
-  await refreshClaude();
+  await refreshAgy();
 })();
 </script>
 </body>

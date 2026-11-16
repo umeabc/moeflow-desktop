@@ -33,11 +33,15 @@ fn main() {
             show_main(app);
         }))
         .invoke_handler(tauri::generate_handler![
-            moeflow_desktop_lib::claude::claude_run,
-            moeflow_desktop_lib::claude::claude_probe,
-            moeflow_desktop_lib::claude::claude_status,
-            moeflow_desktop_lib::claude::claude_detect,
-            moeflow_desktop_lib::commands::set_claude_path,
+            moeflow_desktop_lib::models::codex_models,
+            moeflow_desktop_lib::agy::agy_models,
+            moeflow_desktop_lib::models::dsh_models,
+            moeflow_desktop_lib::models::set_backend_model,
+            moeflow_desktop_lib::agy::agy_run,
+            moeflow_desktop_lib::agy::agy_probe,
+            moeflow_desktop_lib::agy::agy_status,
+            moeflow_desktop_lib::agy::agy_detect,
+            moeflow_desktop_lib::commands::set_agy_path,
             moeflow_desktop_lib::dsh::dsh_run,
             moeflow_desktop_lib::dsh::dsh_probe,
             moeflow_desktop_lib::dsh::dsh_status,

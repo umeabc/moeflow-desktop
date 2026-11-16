@@ -230,7 +230,11 @@ pub async fn codex_run(
     state: tauri::State<'_, AppState>,
     req: CodexRequest,
 ) -> Result<CodexReply, String> {
-    run_with(&resolve(&state.store_snapshot().codex_path), req).await
+    let store = state.store_snapshot();
+    let mut req = req;
+    req.model = crate::models::selected_model(req.model, &store.codex_model);
+    crate::models::validate_images(&store, "codex", &req)?;
+    run_with(&resolve(&store.codex_path), req).await
 }
 
 async fn run_with(bin: &Path, req: CodexRequest) -> Result<CodexReply, String> {

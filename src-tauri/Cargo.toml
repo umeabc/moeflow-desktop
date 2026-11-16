@@ -1,6 +1,6 @@
 [package]
 name = "moeflow-desktop"
-version = "0.1.5"
+version = "0.1.6"
 description = "MoeFlow desktop client"
 authors = ["moeflow-desktop"]
 edition = "2021"
@@ -22,6 +22,10 @@ tauri-plugin-window-state = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+serde_yaml_ng = "0.10"
+# Provider catalogs have no equivalent JSON export; open SQLite read-only.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "net", "io-util", "time", "process"] }
 tokio-util = { version = "0.7", features = ["io"] }

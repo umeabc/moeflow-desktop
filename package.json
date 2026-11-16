@@ -1,7 +1,7 @@
 {
   "name": "moeflow-desktop",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MoeFlow desktop client for Windows",
   "scripts": {
     "fetch:frontend": "bash scripts/fetch-frontend.sh",

@@ -141,42 +141,67 @@ description = "Enables the set_translate_backend command"
 commands.allow = ["set_translate_backend"]
 
 [[permission]]
-identifier = "allow-claude-run"
-description = "Enables the claude_run command"
-commands.allow = ["claude_run"]
+identifier = "allow-agy-run"
+description = "Enables the agy_run command"
+commands.allow = ["agy_run"]
 
 [[permission]]
-identifier = "allow-claude-probe"
-description = "Enables the claude_probe command"
-commands.allow = ["claude_probe"]
+identifier = "allow-agy-probe"
+description = "Enables the agy_probe command"
+commands.allow = ["agy_probe"]
 
 [[permission]]
-identifier = "allow-claude-status"
-description = "Enables the claude_status command"
-commands.allow = ["claude_status"]
+identifier = "allow-agy-status"
+description = "Enables the agy_status command"
+commands.allow = ["agy_status"]
 
 [[permission]]
-identifier = "allow-claude-detect"
-description = "Enables the claude_detect command"
-commands.allow = ["claude_detect"]
+identifier = "allow-agy-detect"
+description = "Enables the agy_detect command"
+commands.allow = ["agy_detect"]
 
 [[permission]]
-identifier = "allow-set-claude-path"
-description = "Enables the set_claude_path command"
-commands.allow = ["set_claude_path"]
+identifier = "allow-set-agy-path"
+description = "Enables the set_agy_path command"
+commands.allow = ["set_agy_path"]
 
 # The set the capabilities actually reference. Note the `[default]` table form — writing
 # this as another `[[permission]]` produces a *permission* named "default" rather than a
 # permission set, and `default_permission` then resolves to null, which silently grants
 # nothing.
+[[permission]]
+identifier = "allow-codex-models"
+description = "Enables the codex_models command"
+commands.allow = ["codex_models"]
+
+[[permission]]
+identifier = "allow-agy-models"
+description = "Enables the agy_models command"
+commands.allow = ["agy_models"]
+
+[[permission]]
+identifier = "allow-dsh-models"
+description = "Enables the dsh_models command"
+commands.allow = ["dsh_models"]
+
+[[permission]]
+identifier = "allow-set-backend-model"
+description = "Enables the set_backend_model command"
+commands.allow = ["set_backend_model"]
+
 [default]
 description = "All MoeFlow desktop IPC commands used by the overlay and the settings window."
 permissions = [
-  "allow-claude-run",
-  "allow-claude-probe",
-  "allow-claude-status",
-  "allow-claude-detect",
-  "allow-set-claude-path",
+  "allow-codex-models",
+  "allow-agy-models",
+  "allow-dsh-models",
+  "allow-set-backend-model",
+
+  "allow-agy-run",
+  "allow-agy-probe",
+  "allow-agy-status",
+  "allow-agy-detect",
+  "allow-set-agy-path",
 
   "allow-dsh-run",
   "allow-dsh-probe",

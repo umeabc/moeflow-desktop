@@ -108,7 +108,9 @@ pub async fn dsh_probe(state: tauri::State<'_, AppState>) -> Result<String, Stri
 }
 #[tauri::command]
 pub async fn dsh_run(state: tauri::State<'_, AppState>, req: CodexRequest) -> Result<CodexReply, String> {
-    run_with(&resolve(&state.store_snapshot().dsh_path), req).await
+    let store = state.store_snapshot();
+    crate::models::validate_images(&store, "dsh", &req)?;
+    run_with(&resolve(&store.dsh_path), req).await
 }
 
 fn build_prompt(req: &CodexRequest, retry: bool) -> Result<String, String> {
@@ -160,6 +162,9 @@ fn extract_json(text: &str) -> Option<String> {
 
 async fn run_with(bin: &Path, req: CodexRequest) -> Result<CodexReply, String> {
     let _lock = RUNNING.try_lock().map_err(|_| "已有任务在跑".to_string())?;
+    if req.model.as_ref().is_some_and(|m| !m.trim().is_empty()) {
+        return Err("dsh 尚未验证单次运行模型覆盖，请在 dsh profile 中设置模型".into());
+    }
     let prompt = build_prompt(&req, false)?;
     let started = Instant::now();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(req.timeout_ms.unwrap_or(120_000).clamp(1, 120_000));

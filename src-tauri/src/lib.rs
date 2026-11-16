@@ -10,8 +10,9 @@
 //! `Authorization` header all behave normally.
 
 pub mod codex;
+pub mod models;
 pub mod dsh;
-pub mod claude;
+pub mod agy;
 pub mod commands;
 pub mod config;
 pub mod download;

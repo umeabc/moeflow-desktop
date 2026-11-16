@@ -27,6 +27,11 @@ impl AppState {
         cache: Arc<MediaCache>,
         shell_port: u16,
     ) -> Result<Self, String> {
+        // Discard obsolete backend catalogs and route aliases from older snapshots.
+        store.model_catalogs.retain(|backend, _| matches!(backend.as_str(), "codex" | "dsh" | "agy"));
+        for models in store.model_catalogs.values_mut() { models.retain(|m| !m.id.starts_with("ccs-")); }
+        if store.codex_model.starts_with("ccs-") { store.codex_model.clear(); }
+        if !matches!(store.translate_backend.as_str(), "" | "codex" | "dsh" | "agy") { store.translate_backend.clear(); }
         store.proxy = store.proxy.validated()?;
         let clients = Arc::new(RwLock::new(Arc::new(ClientBundle::build(&store.proxy)?)));
         Ok(Self {
@@ -299,6 +304,29 @@ impl AppState {
         .await
     }
 
+    pub async fn set_backend_model(&self, backend: String, model: String) -> Result<(), String> {
+        self.mutate(move |store| {
+            let value = match backend.as_str() {
+                "codex" => &mut store.codex_model,
+                "agy" => {
+                    if !model.trim().is_empty() && !store.model_catalogs.get("agy").into_iter().flatten().any(|m| m.id == model.trim()) {
+                        return Err("请先刷新 agy 模型目录并选择支持的模型 ID".into());
+                    }
+                    &mut store.agy_model
+                },
+                "dsh" => return Err("dsh 尚未验证单次运行模型覆盖，请在 dsh profile 中设置模型".into()),
+                _ => return Err("未知后端".into()),
+            };
+            if model.trim().starts_with("ccs-") { return Err("路由别名不是模型 ID".into()); }
+            *value = model.trim().to_owned();
+            Ok(())
+        }).await
+    }
+
+    pub async fn save_model_catalog(&self, backend: String, models: Vec<crate::models::LocalModel>) -> Result<(), String> {
+        self.mutate(move |store| { store.model_catalogs.insert(backend, models); Ok(()) }).await
+    }
+
     pub async fn set_codex_path(&self, path: String) -> Result<(), String> {
         self.mutate(move |store| {
             store.codex_path = path;
@@ -307,8 +335,9 @@ impl AppState {
         .await
     }
 
-    pub async fn set_claude_path(&self, path: String) -> Result<(), String> {
-        self.mutate(move |store| { store.claude_path = path; Ok(()) }).await
+    pub async fn set_agy_path(&self, path: String) -> Result<(), String> {
+        crate::agy::validate_path(&path)?;
+        self.mutate(move |store| { store.agy_path = path; Ok(()) }).await
     }
 
     pub async fn set_dsh_path(&self, path: String) -> Result<(), String> {
@@ -316,8 +345,8 @@ impl AppState {
     }
 
     pub async fn set_translate_backend(&self, backend: String) -> Result<(), String> {
-        if !matches!(backend.as_str(), "" | "codex" | "dsh" | "claude") {
-            return Err("翻译后端必须为 codex、dsh 或 claude".into());
+        if !matches!(backend.as_str(), "" | "codex" | "dsh" | "agy") {
+            return Err("翻译后端必须为 codex、dsh 或 agy".into());
         }
         self.mutate(move |store| { store.translate_backend = backend; Ok(()) }).await
     }

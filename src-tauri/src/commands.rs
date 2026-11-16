@@ -19,7 +19,10 @@ pub struct BootPayload {
     /// Empty means "detect automatically"; prefilled by the settings page.
     pub codex_path: String,
     pub dsh_path: String,
-    pub claude_path: String,
+    pub agy_path: String,
+    pub codex_model: String,
+    pub agy_model: String,
+    pub model_catalogs: std::collections::BTreeMap<String, Vec<crate::models::LocalModel>>,
     pub translate_backend: String,
 }
 
@@ -35,7 +38,10 @@ pub fn payload(state: &AppState) -> BootPayload {
         proxy: store.proxy,
         codex_path: store.codex_path,
         dsh_path: store.dsh_path,
-        claude_path: store.claude_path,
+        agy_path: store.agy_path,
+        codex_model: store.codex_model,
+        agy_model: store.agy_model,
+        model_catalogs: store.model_catalogs,
         translate_backend: store.translate_backend,
         version: env!("CARGO_PKG_VERSION"),
     }
@@ -74,8 +80,8 @@ pub async fn set_codex_path(
 }
 
 #[tauri::command]
-pub async fn set_claude_path(state: tauri::State<'_, AppState>, path: String) -> Result<BootPayload, String> {
-    state.set_claude_path(path).await?;
+pub async fn set_agy_path(state: tauri::State<'_, AppState>, path: String) -> Result<BootPayload, String> {
+    state.set_agy_path(path).await?;
     Ok(payload(&state))
 }
 
