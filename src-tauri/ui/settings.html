@@ -212,7 +212,7 @@
     <div class="status" id="proxy-status" role="status" aria-live="polite"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-codex">
     <h2>本地 Codex</h2>
     <p class="muted">「本地 Codex 翻译」用本机的 codex 识别标号与翻译，请求不经过服务器。留空则自动检测。</p>
     <label class="field">
@@ -233,12 +233,13 @@
 
   <div class="card">
     <h2>翻译后端</h2>
-    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="agy">agy ACP</option></select>
-    <p class="muted">dsh 仅翻译已有标签。agy 仅 gemini-3.8-flash-high（服务版本 1.5.9）实测可接收图片；其他模型仅翻译已有标签。</p>
+    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="agy">Antigravity ACP</option></select>
+    <p class="muted">dsh 仅能翻译已有标签。Antigravity 的 gemini-4 / gemini-3.8 / orchestrator / claude-5.5 家族已实测可接收图片，其余（如 gpt-oss）仅翻译已有标签。</p>
+    <p class="muted" id="backend-hint" hidden>新建标号始终由 codex 完成；切换到 codex 可查看它的配置。</p>
     <div class="status" id="backend-status" role="status" aria-live="polite"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-dsh">
     <h2>本地 dsh</h2>
     <p class="muted">「本地 dsh 翻译」用本机的 dsh 翻译已有标签，请求不经过服务器。留空则自动检测。</p>
     <label class="field">
@@ -258,8 +259,8 @@
     <div class="status" id="dsh-model-status" role="status" aria-live="polite"></div>
   </div>
 
-  <div class="card">
-    <h2>本地 agy</h2>
+  <div class="card" id="card-agy">
+    <h2>本地 Antigravity CLI</h2>
     <p class="muted">通过本机 agy ACP 翻译已有标签，不经过 MoeFlow 服务器。请先配置 agy 的模型服务。仅已实测模型支持图片。留空则自动检测。</p>
     <label class="field">
       <span>agy.exe 路径</span>
@@ -550,6 +551,7 @@ function applyPayload(payload) {
   if (document.activeElement !== $("agy-path")) $("agy-path").value = payload.agy_path || "";
   if (document.activeElement !== $("dsh-path")) $("dsh-path").value = payload.dsh_path || "";
   if (document.activeElement !== $("translate-backend")) $("translate-backend").value = payload.translate_backend || "codex";
+  applyBackendVisibility();
   if (!proxyDirty) applyProxy(payload.proxy);
   const editingId = state.editing?.id;
   state.profiles = payload.profiles;
@@ -558,6 +560,13 @@ function applyPayload(payload) {
   state.editing = payload.profiles.find((p) => p.id === editingId) ?? null;
   fillForm(state.editing);
   renderProfiles();
+}
+
+// One backend's config at a time: three full cards at once buried the one that matters.
+function applyBackendVisibility() {
+  const backend = $("translate-backend").value || "codex";
+  for (const key of ["codex", "dsh", "agy"]) $(`card-${key}`).hidden = key !== backend;
+  $("backend-hint").hidden = backend === "codex";
 }
 
 // Discovery runs only after an explicit Settings refresh; translation uses persisted metadata.
@@ -765,6 +774,7 @@ $("btn-agy-save").onclick = async () => {
 };
 
 $("translate-backend").onchange = async () => {
+  applyBackendVisibility();
   try {
     applyPayload(await invoke("set_translate_backend", { backend: $("translate-backend").value }));
     setStatus($("backend-status"), "已保存", "ok");

@@ -125,7 +125,7 @@ function objectSchema(properties: Record<string, unknown>) {
 }
 
 export type Backend = 'codex' | 'dsh' | 'agy';
-export const backendLabel = (backend: Backend) => backend === 'dsh' ? 'dsh（仅翻译）' : backend;
+export const backendLabel = (backend: Backend) => backend === 'dsh' ? 'dsh（仅翻译）' : backend === 'agy' ? 'Antigravity ACP' : 'codex';
 export async function configuredBackend(): Promise<Backend> {
   const settings = await invoke<{ translate_backend?: string }>('boot_payload');
   return settings.translate_backend === 'dsh' || settings.translate_backend === 'agy' ? settings.translate_backend : 'codex';
@@ -146,7 +146,7 @@ export async function recognize(page: Page, language: string, onBackend?: (backe
   if (!labels.length && known?.vision === false) throw new Error(`模型 ${model} 已明确为仅文本，无法识别图片；请选择视觉模型`);
   // Known text-only models can still translate existing labels without an image.
   const attachImage = (backend === 'codex' && known?.vision !== false) || (backend === 'agy' && known?.vision === true);
-  if (!labels.length && !attachImage) throw new Error(`${backend === 'dsh' ? 'dsh 无视觉' : 'agy 当前模型视觉未验证'}，不能识别图片或创建标签；请先添加标签，或将翻译后端改为 codex`);
+  if (!labels.length && !attachImage) throw new Error(`${backend === 'dsh' ? 'dsh 无视觉' : 'Antigravity 当前模型视觉未验证（gemini-4 / gemini-3.8 / orchestrator / claude-5.5 家族已验证）'}，不能识别图片或创建标签；请先添加标签，或改用已验证的模型`);
   let png = '';
   let W = 1;
   let H = 1;

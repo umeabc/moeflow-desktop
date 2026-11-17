@@ -239,17 +239,26 @@ fn extract_json(text: &str) -> Option<String> {
 
 
 // Capability flags alone do not prove that a model receives image pixels.
-/// Models whose image path was actually exercised against this ACP server.
+/// Model families whose image path was actually exercised against this ACP server.
 ///
 /// The handshake advertises `promptCapabilities.image`, which only proves the transport
-/// accepts an image block — not that a given model reads it. Pinning the *server version*
-/// was worse still: a routine bridge update silently turned vision off. So: capability
-/// must be advertised, and the model must be one that was really tested.
-const VERIFIED_VISION: &[&str] = &["gemini-3.8-flash-high"];
+/// accepts an image block — not that a given model reads it. One probed member proves the
+/// family's request path; the list stays explicit so a new family is never assumed to see
+/// images. Probed 2026-11-17 with a solid-green 160x100 PNG: gemini-4-argon-high,
+/// gemini-4-argon-medium, gemini-4-hydrogen-high, gemini-pro-orchestrator-g1-pro,
+/// gemini-3.8-flash-high, claude-opus-5-5-high, claude-sonnet-5-5-high → all answered
+/// "green"; gpt-oss-120b-medium returned nothing and stays text-only.
+const VISION_FAMILIES: &[&str] = &[
+    "gemini-4-",
+    "gemini-3.8-",
+    "gemini-pro-orchestrator",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+];
 
 fn verified_vision(init: &Value, model: Option<&str>) -> bool {
     init["agentCapabilities"]["promptCapabilities"]["image"] == true
-        && model.is_some_and(|m| VERIFIED_VISION.contains(&m))
+        && model.is_some_and(|m| VISION_FAMILIES.iter().any(|family| m.starts_with(family)))
 }
 #[tauri::command]
 pub async fn agy_models(state: tauri::State<'_, AppState>) -> Result<Vec<crate::models::LocalModel>, String> {
