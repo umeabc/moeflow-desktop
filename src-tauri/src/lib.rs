@@ -184,7 +184,10 @@ pub fn ensure_shell_window(app: &AppHandle, visible: bool) -> tauri::Result<()> 
     }
 
     let app_for_events = app.clone();
-    let mut builder = WebviewWindowBuilder::new(app, "launcher", shell_url(app, "launcher.html"));
+    let mut builder = WebviewWindowBuilder::new(app, "launcher", shell_url(app, "launcher.html"))
+        // Same reason as the main window: keep the webview's own drag-drop handler so a
+        // page that accepts files still receives HTML5 drop events.
+        .disable_drag_drop_handler();
     if let Some(root) = std::env::var_os("MOEFLOW_TEST_ROOT") {
         builder = builder.data_directory(PathBuf::from(root).join("webview"));
         if let Ok(port) = std::env::var("MOEFLOW_TEST_CDP_PORT")

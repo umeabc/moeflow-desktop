@@ -334,9 +334,10 @@ async fn api_proxy(
     // nginx serves from the SPA fallback (200 for GET, 405 for POST). Say so plainly here
     // rather than letting every endpoint fail one at a time.
     if content_type.contains("text/html") {
+        // Method and status matter here: a 405 on a route the app really calls means the
+        // *method* is wrong (or the route moved), while 404/200 means the base is wrong.
         eprintln!(
-            "[moeflow] API call returned HTML instead of JSON — check the API base for this \
-             profile (is it missing the /api segment?): {target}"
+            "[moeflow] {method} {target} -> {status} HTML instead of JSON (wrong method/route, or API base missing the /api segment)"
         );
     }
 

@@ -222,6 +222,11 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<()> {
         .title("MoeFlow")
         .inner_size(1400.0, 900.0)
         .min_inner_size(960.0, 640.0)
+        // Tauri replaces WebView2's drag-drop handler to emit its own DragDropEvent, which
+        // swallows the HTML5 `drop` events the uploader (FilePond) listens for — dragging an
+        // image onto the page did nothing. Nothing here consumes those Tauri events, so give
+        // the webview's native handler back and let the page handle file drops.
+        .disable_drag_drop_handler()
         .visible(visible);
     let builder = if let Some(root) = std::env::var_os("MOEFLOW_TEST_ROOT") {
         let builder = builder.data_directory(PathBuf::from(root).join("webview"));
