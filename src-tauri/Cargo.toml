@@ -1,6 +1,6 @@
 [package]
 name = "moeflow-desktop"
-version = "0.1.11"
+version = "0.2.0"
 description = "MoeFlow desktop client"
 authors = ["moeflow-desktop"]
 edition = "2021"

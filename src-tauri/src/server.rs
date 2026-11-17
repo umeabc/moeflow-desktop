@@ -333,7 +333,11 @@ async fn api_proxy(
     // *site* address saved as the API base: `/api/v1/x` then goes to `<site>/v1/x`, which
     // nginx serves from the SPA fallback (200 for GET, 405 for POST). Say so plainly here
     // rather than letting every endpoint fail one at a time.
-    if content_type.contains("text/html") {
+    // Flask stamps `text/html` on every response by default, including 204s that carry no
+    // body at all — a successful DELETE therefore looked like a broken API base. Only shout
+    // when there is actually a body that failed to be JSON.
+    let no_body = matches!(status.as_u16(), 204 | 205 | 304);
+    if content_type.contains("text/html") && !no_body {
         // Method and status matter here: a 405 on a route the app really calls means the
         // *method* is wrong (or the route moved), while 404/200 means the base is wrong.
         eprintln!(
