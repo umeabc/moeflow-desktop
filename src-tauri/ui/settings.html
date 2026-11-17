@@ -271,6 +271,7 @@
       <button id="btn-agy-save">保存并检测</button>
     </div>
     <div class="status" id="agy-status" role="status" aria-live="polite"></div>
+    <div class="status" id="agy-resolved" style="overflow-wrap:anywhere"></div>
     <label class="field"><span>模型</span><select id="agy-model"><option value="">默认（使用后端配置）</option></select></label>
     <label class="field"><span>自定义模型 ID（优先于下拉选择）</span><input type="text" id="agy-model-custom" placeholder="留空使用下拉选择" /></label>
     <div class="buttons"><button id="agy-model-refresh">刷新模型目录</button><button id="agy-model-save">保存模型</button></div>
@@ -726,6 +727,7 @@ $("btn-dsh-save").onclick = async () => {
 let agyBusy = false;
 
 function renderAgy(report) {
+  $("agy-resolved").textContent = `当前使用：${report.resolved || "未解析（请检查路径配置）"}`;
   if (report.version) {
     setStatus($("agy-status"), `可用 · ${report.version} · ${report.resolved || ""}`, "ok");
     return;

@@ -15,18 +15,24 @@ fn fallback() -> Option<PathBuf> {
         PathBuf::from(home).join("Documents/deepseek-harness/default-workspace/agy-bridge/dist-tunnel/agy.exe")
     })
 }
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const SWEEP_TIMEOUT: Duration = Duration::from_secs(8);
 const LIMIT: usize = 16 * 1024 * 1024;
 fn is_shim(p: &Path) -> bool {
     matches!(p.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase().as_str(), "cmd" | "bat" | "ps1")
 }
 fn candidates(configured: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    if !configured.trim().is_empty() { paths.push(PathBuf::from(configured.trim())); }
     if let Some(p) = std::env::var_os("AGY_BIN") { paths.push(PathBuf::from(p)); }
     if let Some(p) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&p) { for name in ["agy.exe", "agy"] { paths.push(dir.join(name)); } }
     }
     if let Some(path) = fallback() { paths.push(path); }
-    if !configured.trim().is_empty() { paths.push(PathBuf::from(configured.trim())); }
+    ordered_files(paths)
+}
+/// Keep discovery and execution in the same order without accepting shell wrappers.
+fn ordered_files(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = vec![];
     for p in paths {
         if p.is_file() && !is_shim(&p) && !found.iter().any(|old| old.to_string_lossy().eq_ignore_ascii_case(&p.to_string_lossy())) { found.push(p); }
@@ -39,10 +45,8 @@ pub(crate) fn validate_path(configured: &str) -> Result<(), String> {
 }
 fn resolve(configured: &str) -> Result<PathBuf, String> {
     validate_path(configured)?;
-    if let Some(p) = std::env::var_os("AGY_BIN") {
-        let p = PathBuf::from(p);
-        if is_shim(&p) { return Err("AGY_BIN 不支持包装脚本".into()); }
-        return Ok(p);
+    if !configured.trim().is_empty() && !Path::new(configured.trim()).is_file() {
+        return Err(format!("配置的 agy 路径不存在或不是文件：{}", configured.trim()));
     }
     candidates(configured).into_iter().next().ok_or_else(|| "未找到 agy，请配置原生可执行文件路径".into())
 }
@@ -123,30 +127,52 @@ impl Acp {
             }
         }
     }
+    /// Relay startup and session creation can each be cold; bound them independently.
+    /// The caller's inference deadline still encloses both steps and the prompt.
+    async fn handshake_call(&mut self, id: u64, method: &str, params: Value) -> Result<Value, String> {
+        let started = Instant::now();
+        let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.call(id, method, params, &mut String::new())).await
+            .map_err(|_| format!("agy {method} 超时（30 秒）：可能是中继/远端 CLI 冷启动过慢；{}", self.stderr_tail()))?;
+        #[cfg(test)]
+        println!("agy {method} elapsed={:.3}s", started.elapsed().as_secs_f64());
+        #[cfg(not(test))]
+        let _ = started;
+        result
+    }
     async fn open(&mut self) -> Result<(Value, Value), String> {
-        let init = self.call(1, "initialize", json!({"protocolVersion":1}), &mut String::new()).await?;
+        let init = self.handshake_call(1, "initialize", json!({"protocolVersion":1})).await?;
         if init["protocolVersion"] != 1 { return Err("agy ACP 协议版本不兼容".into()); }
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let session = self.call(2, "session/new", json!({"cwd":cwd,"mcpServers":[]}), &mut String::new()).await?;
+        let session = self.handshake_call(2, "session/new", json!({"cwd":cwd,"mcpServers":[]})).await?;
         Ok((init, session))
     }
 }
 async fn probe_at(bin: &Path) -> Result<String, String> {
     let mut acp = Acp::spawn(bin)?;
-    let result = tokio::time::timeout(Duration::from_secs(20), acp.open()).await;
+    let result = acp.open().await;
     let _ = acp.child.kill().await;
     let _ = acp.child.wait().await;
-    let (init, session) = result.map_err(|_| "agy 检测超时".to_string())??;
+    let (init, session) = result?;
     Ok(format!("{} {} · ACP 1 · 默认模型 {}", init["agentInfo"]["name"].as_str().unwrap_or("agy"), init["agentInfo"]["version"].as_str().unwrap_or("?"), session["models"]["currentModelId"].as_str().unwrap_or("未知")))
 }
 async fn status(configured: &str) -> CodexStatus {
-    let mut probed = vec![];
-    for p in candidates(configured) {
-        let r = probe_at(&p).await;
-        probed.push(CodexCandidate { path:p.to_string_lossy().into_owned(), version:r.as_ref().ok().cloned(), error:r.err() });
-    }
     let target = resolve(configured);
     let result = match &target { Ok(p) => probe_at(p).await, Err(e) => Err(e.clone()) };
+    let mut probed = vec![];
+    for p in candidates(configured) {
+        let r = if target.as_ref().ok() == Some(&p) {
+            result.clone()
+        } else if target.is_err() {
+            Err("未探测：请先修正路径配置".into())
+        } else if result.is_err() {
+            // A diagnostic sweep must not spend a full cold-start budget per candidate.
+            tokio::time::timeout(SWEEP_TIMEOUT, probe_at(&p)).await
+                .unwrap_or_else(|_| Err("agy 候选探测超时（8 秒）".into()))
+        } else {
+            Err("未探测：已解析的 agy 可用".into())
+        };
+        probed.push(CodexCandidate { path:p.to_string_lossy().into_owned(), version:r.as_ref().ok().cloned(), error:r.err() });
+    }
     CodexStatus { configured:configured.into(), resolved:target.ok().map(|p| p.to_string_lossy().into_owned()), version:result.as_ref().ok().cloned(), error:result.err(), candidates:probed }
 }
 #[tauri::command]
@@ -264,10 +290,10 @@ fn verified_vision(init: &Value, model: Option<&str>) -> bool {
 pub async fn agy_models(state: tauri::State<'_, AppState>) -> Result<Vec<crate::models::LocalModel>, String> {
     let _lock = LISTING.try_lock().map_err(|_| "正在读取 agy 模型目录".to_string())?;
     let mut acp = Acp::spawn(&resolve(&state.store_snapshot().agy_path)?)?;
-    let result = tokio::time::timeout(Duration::from_secs(20), acp.open()).await;
+    let result = acp.open().await;
     let _ = acp.child.kill().await;
     let _ = acp.child.wait().await;
-    let (init, session) = result.map_err(|_| "agy 模型检测超时".to_string())??;
+    let (init, session) = result?;
     let models: Vec<_> = session["models"]["availableModels"].as_array().into_iter().flatten().filter_map(|v| {
         let id = v["modelId"].as_str()?;
         Some(crate::models::LocalModel { id:id.into(), label:v["name"].as_str().map(str::to_owned), source:"agy ACP session/new · 本机实时目录；非推理可达性验证".into(), vision:verified_vision(&init, Some(id)).then_some(true) })
@@ -278,6 +304,35 @@ pub async fn agy_models(state: tauri::State<'_, AppState>) -> Result<Vec<crate::
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configured_wins_and_discovery_filters_files() {
+        let dir = std::env::temp_dir().join(format!("agy-resolution-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<_> = ["configured.exe", "env.exe", "path.exe", "fallback.exe", "shim.cmd", "shim.bat", "shim.ps1"]
+            .iter().map(|name| dir.join(name)).collect();
+        for path in &paths { std::fs::write(path, []).unwrap(); }
+        let configured = paths[0].to_str().unwrap();
+        assert_eq!(resolve(configured).unwrap(), paths[0]);
+        assert_eq!(candidates(configured)[0], paths[0]);
+        let mut inputs = paths.clone();
+        inputs.extend([paths[0].clone(), PathBuf::from(paths[0].to_string_lossy().to_uppercase()), dir.clone(), dir.join("missing")]);
+        assert_eq!(ordered_files(inputs), paths[..4]);
+        for shim in &paths[4..] {
+            assert!(resolve(shim.to_str().unwrap()).is_err());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[tokio::test]
+    async fn missing_configured_is_reported() {
+        // A missing explicit choice must never be replaced by an installed fallback.
+        let missing = std::env::temp_dir().join(format!("agy-missing-{}.exe", std::process::id()));
+        let configured = missing.to_str().unwrap();
+        assert!(resolve(configured).unwrap_err().contains(configured));
+        let report = status(configured).await;
+        assert!(report.resolved.is_none());
+        assert!(report.version.is_none());
+        assert!(report.error.unwrap().contains(configured));
+    }
     fn request() -> CodexRequest { CodexRequest { prompt:"Return JSON with answer equal to ok. Do not use tools.".into(), schema:r#"{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}"#.into(), images:vec![], model:Some("gemini-3.8-flash-high".into()), timeout_ms:None } }
     #[test]
     fn rejects_shims_and_extracts_json() {
