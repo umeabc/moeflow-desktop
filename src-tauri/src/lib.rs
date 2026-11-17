@@ -28,12 +28,17 @@ pub mod shell;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 use commands::AppState;
 use server::Ctx;
+
+/// Track successful tray creation so closing the shell preserves a way back into the app.
+#[derive(Default)]
+pub struct TrayAvailability(pub AtomicBool);
 
 /// A bound loopback listener and the handle that shuts it down.
 pub struct ServerHandle {
@@ -215,7 +220,9 @@ pub fn ensure_shell_window(app: &AppHandle, visible: bool) -> tauri::Result<()> 
             let app = app_for_events.clone();
             tauri::async_runtime::spawn(async move {
                 let _ = window.hide();
-                reveal_main_if_hidden(&app);
+                if !app.state::<TrayAvailability>().0.load(Ordering::Relaxed) {
+                    reveal_main_if_hidden(&app);
+                }
             });
         }
     });

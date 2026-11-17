@@ -212,6 +212,14 @@
     <div class="status" id="proxy-status" role="status" aria-live="polite"></div>
   </div>
 
+  <div class="card">
+    <h2>翻译后端</h2>
+    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="agy">Antigravity ACP</option></select>
+    <p class="muted">dsh 仅能翻译已有标签。Antigravity 的 gemini-4 / gemini-3.8 / orchestrator / claude-5.5 家族已实测可接收图片，其余（如 gpt-oss）仅翻译已有标签。</p>
+    <p class="muted" id="backend-hint" hidden>新建标号始终由 codex 完成；切换到 codex 可查看它的配置。</p>
+    <div class="status" id="backend-status" role="status" aria-live="polite"></div>
+  </div>
+
   <div class="card" id="card-codex">
     <h2>本地 Codex</h2>
     <p class="muted">「本地 Codex 翻译」用本机的 codex 识别标号与翻译，请求不经过服务器。留空则自动检测。</p>
@@ -229,14 +237,6 @@
     <div class="buttons"><button id="codex-model-refresh">刷新模型目录</button><button id="codex-model-save">保存模型</button></div>
     <p class="muted">本地目录不保证 provider 可达。视觉能力仅依据明确元数据；未知模型允许尝试，但仍受后端图片支持限制。</p>
     <div class="status" id="codex-model-status" role="status" aria-live="polite"></div>
-  </div>
-
-  <div class="card">
-    <h2>翻译后端</h2>
-    <select id="translate-backend"><option value="codex">codex</option><option value="dsh">dsh</option><option value="agy">Antigravity ACP</option></select>
-    <p class="muted">dsh 仅能翻译已有标签。Antigravity 的 gemini-4 / gemini-3.8 / orchestrator / claude-5.5 家族已实测可接收图片，其余（如 gpt-oss）仅翻译已有标签。</p>
-    <p class="muted" id="backend-hint" hidden>新建标号始终由 codex 完成；切换到 codex 可查看它的配置。</p>
-    <div class="status" id="backend-status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="card" id="card-dsh">

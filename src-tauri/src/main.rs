@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use moeflow_desktop_lib::commands::AppState;
 use moeflow_desktop_lib::media::MediaCache;
 use moeflow_desktop_lib::profiles::ProfileStore;
 use moeflow_desktop_lib::{
-    active_port, ensure_shell_window, navigate_main, open_launcher, open_shell, skip_launcher,
+    active_port, ensure_shell_window, navigate_main, open_launcher, open_shell, skip_launcher, TrayAvailability,
 };
 
 /// How often the media cache index is written out.
@@ -72,6 +73,7 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            app.manage(TrayAvailability::default());
 
             // An opt-in test root keeps runtime smoke checks away from user profiles and cache.
             let test_root = std::env::var_os("MOEFLOW_TEST_ROOT").map(PathBuf::from);
@@ -162,6 +164,8 @@ fn main() {
             // unaffected — a failure there is equally non-fatal, just far less likely.
             if let Err(err) = build_tray(&handle) {
                 eprintln!("[moeflow] tray unavailable, continuing without one: {err}");
+            } else {
+                app.state::<TrayAvailability>().0.store(true, Ordering::Relaxed);
             }
 
             Ok(())
