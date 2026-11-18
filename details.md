@@ -1,0 +1,406 @@
+# 实现细节
+
+README 只保留使用说明与构建；其余内容（架构、启动流程、导出内部实现、IPC 约定、缓存、测试陷阱、已知限制）在这里，历史记录原样保留。
+
+## 它是怎么工作的
+
+前端产物挂在 `http://127.0.0.1:<端口>/` 上，由应用内置的一个 axum 服务器提供。这一步是整个方案的支点——因为浏览器里能跑的路径，在这里原样能跑：
+
+| 前端的行为 | 为什么必须同源 |
+|---|---|
+| 资产路径是根绝对的（`/assets/...`、`/static/...`） | `file://` 下必然白屏 |
+| `BrowserRouter` 无 `basename`，且有整页跳转的 `<a href="/dashboard/...">` | 需要 SPA fallback（未知路径回 `index.html`） |
+| `/moeflow-runtime-config.json` 是根绝对路径 | 用它把 `baseURL` 指到我们的代理 |
+| `token` cookie + `Authorization` 头 | 同源才不需要改鉴权 |
+
+服务器端点：
+
+```
+GET  /moeflow-runtime-config.json   →  {"baseURL": "/api/"}
+ANY  /api/*          →  流式反代到当前档位的 API（转发 Bearer、上传/下载不落内存）
+GET  /__media/*      →  取图，走 LRU 磁盘缓存
+GET  /__download/*   →  原生「另存为」对话框 + 流式写盘
+GET  /*              →  前端静态资源 + SPA fallback
+```
+
+另有一个**独立的外壳服务器**（自己的端口，随进程生命周期运行），只提供实例选择页与设置页：
+
+```
+GET  /launcher.html  →  实例选择页
+GET  /settings.html  →  设置页
+GET  /               →  同 launcher.html
+其它                 →  404（刻意不做 SPA fallback）
+```
+
+### 为什么外壳页不走 Tauri 的 `tauri://` 资产协议
+
+一开始这两个页面是用 `WebviewUrl::App("launcher.html")` 加载的，结果是**一片白的窗口**，日志里什么都没有。
+
+原因：`tauri://` 协议按一张**编译期烤进二进制**的资产表解析路径，而 cargo 在只有 `frontendDist`（`ui/`）里的文件变化时**不会重跑 `generate_context!`**。于是页面改动不会被重新嵌入，资产表一旦对不上就返回 `AssetNotFound`——表现就是一个纯白窗口，既不报错也不提示。这类失败在开发机上时隐时现，非常难查。
+
+现在这两个页面由我们自己的 axum 服务器提供，HTML 用 `include_str!` 嵌入（普通的编译期依赖，改文件必然触发重建），并且跟主窗口走**同一条已经验证过的服务路径**。
+
+> 附带好处：dev 与打包后的行为完全一致——不再有「dev 模式下 `cfg(dev)` 常开」这类只在某一种构建里出现的行为差异。
+
+设置页与实例选择页**各自独立于档位服务器**：当前实例连不上时它们照样能打开。
+
+**每个服务器档位绑定各自的固定端口。** 端口参与 origin，固定端口避免 origin 级存储在编辑配置时被换掉。注意普通 HTTP cookie 按 host/path 匹配，端口不隔离 cookie；不能把不同 `127.0.0.1` 端口视为完整的会话隔离保证。
+
+### 端口只分配一次，永不重排
+
+端口是 origin 的一部分，变化会让 origin 级存储与页面上下文变成另一份。运行时应保持端口稳定，不能因为保存配置而更换。
+
+由此有一条硬性规矩：**运行时不要探测端口是否空闲**。`ensure_ports()` 曾经带一个 `port_is_free()` 判断，而 `upsert_profile()` 会在**自己的环路服务器正监听这些端口**的时候调用它——于是每个已存在的档位都显得「被占用」，全被换到新端口。症状就是：**加一个新实例，其他所有实例的登录一起失效**。
+
+现在分成两个函数，别混用：
+
+| 函数 | 何时调用 | 做什么 |
+|---|---|---|
+| `ensure_ports()` | 任何时候（含 `upsert_profile` / `delete_profile`） | 只给没端口的分配，以及拆开重复的端口。**不探测** |
+| `reassign_ports_held_elsewhere()` | **只在启动时**，即我们自己的服务器还没绑定之前 | 会探测：把被别的进程占住的端口挪开 |
+
+`adding_a_profile_leaves_the_running_ones_on_their_own_origins` 这个测试用真实监听套接字模拟「服务器正在跑」，把整条序列走一遍。它对着旧代码会**失败**（`47101,47103` → `47104,47105`），这正是回归判据。
+
+## 一个外壳窗口，两个视图
+
+实例选择和设置是**同一个窗口**里的两个视图，顶上有页签切换。这不是为了好看：
+
+> **永远不要从同步命令里创建 webview 窗口。**
+
+设置页原来是一个独立窗口，由 `open_settings`（同步 `#[tauri::command]`）创建。同步命令跑在**主线程**上，而 `WebviewWindowBuilder::build()` 要等事件循环应答——事件循环正被这条命令自己占着。于是：
+
+* HWND 在阻塞发生**之前**就建好了 → 一个标题和尺寸都正确、但什么都没画的白窗口
+* 主线程永远卡在 `build()` 里 → 整个应用冻住，X 都点不动 → 只能强制结束进程
+
+日志是最直接的证据：打出了 `target = External(http://127.0.0.1:PORT/settings.html)`（URL 完全正确），**却没有下一行的「built」** —— `build()` 根本没返回。所以问题从来不在页面本身。
+
+视图切换只是同一个窗口里的一次同源跳转（`<a href="/settings.html">`），不经过任何 IPC，也就没有这个问题。窗口本身仍然只在 `setup()` 里创建一次——那是唯一安全的地方。
+
+| 视图 | 职责 | 不做什么 |
+|---|---|---|
+| 实例选择 | 选一个实例连接 | 不提供「添加实例」——编辑配置一律在设置视图 |
+| 设置 | 增删改实例、缓存管理 | 点一行**只选中待编辑**，不切换实例 |
+
+「选择服务器」曾经就是点一行，而那个 handler 直接调了 `set_active_profile`——它会**把主窗口弹出来并盖住设置视图**。想编辑一台服务器，结果应用跳到面前，这就是「异常导致打开窗口」。
+
+现在职责拆开了：点行 = 填表单（并给该行加蓝框），右侧显示「当前使用」徽标的是**正在用的那台**——两者必须长得不一样，否则「点行选它编辑」和「点行切到它」就分不清。真正切换实例要用明确的「连接到此实例」按钮。
+
+## 0.1.1：保存服务器与代理设置
+
+保存服务器时曾从异步 IPC 内调用 `restart_servers()`，再次进入 Tokio `block_on`，触发 `Cannot start a runtime from within a runtime`。release 配置是 `panic = "abort"`，所以用户看到的是立即闪退。保存现在使用异步增量更新：已有实例复用监听器，新实例才绑定端口，删除仅关闭对应实例；磁盘保存或绑定失败会显示错误，保留原有配置和服务。
+
+设置页的「代理设置」对所有实例生效，旧配置升级后默认选择系统代理：
+
+| 选项 | 行为 |
+|---|---|
+| 直接连接 | 禁用自动代理，即便环境变量中存在代理也直接连接 |
+| 使用系统代理（默认） | 使用环境变量和 Windows 静态系统代理及绕过规则 |
+| 手动添加 HTTP 代理 | 填入 `http://127.0.0.1:7890` 这样的 HTTP 地址，HTTP 请求转发、HTTPS 请求通过 CONNECT |
+
+点「应用代理设置」后，新请求立即采用新配置，进行中的传输继续完成；设置会保存并在重启后恢复。不改变本机 Windows 代理，也不重新分配实例端口。本地环路地址（localhost、127.0.0.0/8、::1）始终直连；跨公网/环路边界的 HTTP 重定向停止自动跟随，避免换用错误的代理路径。
+
+范围：客户端 Rust 管理的 API 请求/上传、图片、原生下载、本地导出、PS 脚本和地址探测。系统浏览器外链，以及上游网页直接发往第三方的 AI 请求等，仍使用各自浏览器网络配置。系统模式支持静态代理；依赖库不执行 PAC/WPAD，协议分别配置的 Windows 代理字符串也可能不适用，此时可填写手动 HTTP 地址。
+
+## 服务器预设
+
+`src-tauri/presets/servers.json` 包含已知 MoeFlow 站点的配置，编译期嵌入：
+
+- **moeflow.basmc.org** — 彩翻（basmc）
+- **moetran.com** — 尨译 MoeTran（API 在 `api.moetran.com`）
+- **demo.moeflow.org** — MoeFlow 演示站
+
+在实例选择页/设置页填入站点地址时，客户端先查预设表：匹配 host 即直接用预设的 `api_base` 和 `media_origins`，**无需网络探测**。未命中的地址才走自动探测（尝试 `<site>/api`、`<site>`、`https://api.<host>` 并用 `/ping` 验证）。
+
+如果探测全部失败，则按 `<site>/api` 作为兜底（多数 nginx 部署都是这个形态）。
+
+## 启动流程
+
+首次启动**不会**直接进入某个实例，而是打开外壳窗口的**实例选择**视图（`src-tauri/ui/launcher.html`）：
+
+- 列出所有实例及其 API 地址，点一下即连接（预置只有尨译 MoeTran 一个）
+- 右上页签切到**设置**视图（`settings.html`）增删改实例：填站点地址，**测试连接**会按候选顺序探测并回填真正可用的 API 地址
+- 勾选「启动时直接进入上次使用的实例」可跳过（默认不勾——直接落进某个服务器正是多实例客户端不该有的意外）
+- 只剩一个实例时不能删除（会明确报错，而不是留下一个连不上任何地方的窗口）
+
+### ⚠️ API 地址必须探测出来，不能拿站点地址顶上
+
+`api_base` 有两种形态：nginx 部署在 `<站点>/api`（`proxy_pass` 的尾斜杠把 `/api` 剥掉），而尨译是**另一个源**且没有 `/api` 段。**人填的是站点地址，不是 API 地址**，所以猜不得。
+
+早期两个编辑页都在 API 栏留空时退回站点地址——存进去的地址什么都答不上来，只会被 SPA fallback 接住。症状极容易被误判成服务端问题：
+
+| 调用 | 结果 |
+|---|---|
+| `GET <站点>/v1/...` | 200 + SPA 外壳 → 前端解析 JSON 失败 |
+| `POST <站点>/v1/captchas` | nginx 直接 **405** → **登录验证码永远不显示** |
+| `GET <站点>/ping` | 200 + HTML（不是 `pong`） |
+
+现在三道防线：两个编辑页保存前都会先探测（`resolveApiBase`），**并且 `upsert_profile` 命令自己也会解析**——`api_base` 为空、或等于站点地址时，它按候选顺序探测一遍，探不到就拒绝保存。不变量落在唯一写配置的地方，新增调用方不会再把这条路走回去。
+
+判据是 `api_base_needs_resolution`：**和站点地址不同的** API 地址原样接受（有人确实知道探测探不出的地址，也不该因为服务器暂时不在线就存不进去）。
+
+主窗口此时是隐藏的，选定实例后才显示；**托盘左键**、托盘菜单的「切换实例…」、以及主窗口里的「打开实例选择」按钮都能随时回到这个页面。
+
+### 落点为什么不是首页
+
+选定实例后打开的是受保护的 `/dashboard/projects`，**不是** `/`。
+
+前端把 `/` 放在 `publicPaths` 里（`App.tsx`），未登录时它照样渲染站点主页——包括服务端配置的公告横幅。客户端直接进首页就会看到「域名调整通告」而不是登录框。
+
+选受保护的路由则两种情形都对：
+
+| 状态 | 结果 |
+|---|---|
+| 未登录 | `App.tsx` 的守卫（`!token && !publicPaths.includes(path)`）自动重定向到 `/login` |
+| 已登录 | 直接进工作台，不用先划过一次登录表单 |
+
+过期的令牌也会自愈：首次 401 会清掉 token，守卫随即重定向到登录页。
+
+**每个实例使用独立且持久化的本地端口**，以保留稳定的前端 origin。普通 cookie 不按端口隔离，跨站切换仍需留意当前登录账户。
+
+## 支持的服务器
+
+**预置只有一个：尨译 MoeTran**（`https://moetran.com` + `https://api.moetran.com`）。其余实例通过「添加实例」自行添加——一个默认就列着别人服务器的客户端，只会让人连错地方。
+
+档位里的 `api_base` 是**完整前缀**，`/api/<rest>` 直接拼在它后面。这样四种部署形态都能覆盖：
+
+| 形态 | 站点地址 | API 地址 | 说明 |
+|---|---|---|---|
+| 前后端同源、nginx 带 `/api` 段 | `https://moeflow.basmc.org` | `.../api` | `proxy_pass http://backend:5000/` 的尾斜杠**剥掉** `/api` |
+| 同上 | `https://demo.moeflow.org` | `.../api` | 同上 |
+| **前后端不同源、API 在根路径** | `https://moetran.com` | `https://api.moetran.com` | 没有 `/api` 段 |
+| 内网机器 | `http://172.29.133.24` | `.../api` | 同 nginx 形态 |
+
+> **探测不能看状态码。** `location / { try_files $uri /index.html; }` 会把任何未知路径都回成 SPA 壳 + 200，所以 `/v1/anything` 看起来「通」其实是假的。可靠判据是后端公开的 `/ping` 返回字面量 `pong`。「测试连接」按钮走的就是这个。
+
+## 构建与测试的坑
+
+README 的「构建」只讲怎么打包；这里放调试脚手架与测试环境的限制。
+
+### 调试
+
+`scripts/settings-smoke.mjs` 用真实 DOM 执行设置页脚本并给 IPC 提供桩：`bun -i scripts/settings-smoke.mjs`，验证代理单选、输入校验、保存错误和重复提交防护。
+
+### ⚠️ 测试程序需要 Common Controls v6 清单
+
+`npm run test:rust` 走的是 `scripts/run-rust-tests.mjs`，不是裸 `cargo test`。
+
+取图/下载路径会用到 `TaskDialogIndirect`，而它只有 comctl32.dll 的 **v6（并行）版本**才导出。正式程序由 Tauri 内嵌清单，所以没问题；但 `cargo test` 生成的是另一次链接、自己没有清单，Windows 于是加载 comctl32 v5，进程在跑任何测试之前就以 `STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139)` 退出——看起来像测试全挂，其实只是缺一个清单。cargo 的 `rustc-link-arg-tests` 覆盖不到 lib 单元测试，所以脚本先 `--no-run` 拿到各个测试程序的路径，给它们各写一份同名 `.manifest` 边车文件（没有内嵌清单的可执行文件会读它），再逐个执行。**正式二进制不受影响**：在那里再嵌一份清单会和 Tauri 自带的资源冲突。
+
+运行时验证可设置 `MOEFLOW_TEST_ROOT=<临时目录>`，程序将配置、缓存及 WebView 数据放在该目录下；不设置则正常使用用户目录。同时设置 `MOEFLOW_TEST_CDP_PORT=<端口>` 可配合本地 CDP 验证真实 IPC 与进程存活（仅在 `MOEFLOW_TEST_ROOT` 已设置时启用）；`bun scripts/runtime-smoke.mjs` 自动建立隔离环境并运行这些检查。只用于本机调试，测试不改变 Windows 系统代理。
+
+单独跑 `cargo build` 出来的二进制时，Tauri 认为自己在 dev 模式（`cfg(dev)` 是 `!custom-protocol`，而 `custom-protocol` 只有 `tauri build` 才会打开）。想看前端控制台：
+
+```bash
+cd src-tauri && MOEFLOW_DEVTOOLS=1 ./target/debug/moeflow-desktop.exe
+```
+
+窗口一片白、日志又没线索时，用 `scripts/capture-window.ps1 main|shell <输出路径>` 抓单个窗口（外壳窗口 856×719，主窗口 1416×939；`launcher` / `settings` 作为别名也接受，它们现在是同一个窗口）（走 `PrintWindow`，不依赖窗口在前台——`SetForegroundWindow` 在非前台进程上会静默失败，否则你会拍到别的窗口）。要一次看全部顶层窗口用 `scripts/capture-all-windows.ps1`：只看「主窗口」会漏掉真正出问题的那个窗口，Windows 的 `MainWindowHandle` 在多窗口进程里挑哪个并没有保证。
+
+`scripts/window-probe.ps1` 是同一套枚举的**只读**版本（不调用 `ShowWindow`），用来判断「窗口到底关掉了没有」——截图脚本会主动把窗口显示出来，会掩盖掉要观测的状态。
+
+`scripts/click-launcher-instance.ps1 <x 比例> <y 比例>` / `scripts/click-at.ps1 -X <屏幕 x> -Y <屏幕 y>` 用真实鼠标事件驱动界面（WebView2 会忽略合成 `WM_LBUTTON` 消息），用于端到端验证「选实例 → 主窗口加载」这条路径。窗口会滚动或改尺寸时，从截图坐标换算绝对屏幕坐标比按比例点击可靠。
+
+`scripts/resize-window.ps1 -Handle <hwnd> -Width <w> -Height <h>` 把窗口调到表单完整可见——比滚轮滚动可靠（滚轮要求指针在窗口上且窗口是活动窗口，`SetWindowPos` 没这些前提）。
+
+`scripts/click-window-at.ps1 -Title <标题片段> -X <x> -Y <y> [-MinWidth <w>]` 按**窗口坐标**点击，也就是和 `capture-window.ps1` 出的图同一套坐标——在图上量到哪就点哪，不用换算标题栏和边框的内缩（本机是 8, 31）。窗口标题都带「MoeFlow」，所以用 `-MinWidth` 区分：实例选择页 776 宽，设置页 836 宽。
+
+#### ⚠️ 屏幕截图会拍到**压在上面**的窗口
+
+`PrintWindow` 抓不到被遮挡的窗口内容时**不报错**，只是给你一张全白（或全黑）的图；而按屏幕区域截图则直接拍下压在上面的那个窗口。本机上实例选择页默认就盖在设置页上面，于是「截设置页 → 点一下 → 再截 → 比差异」**永远得到 0 个像素差**，看起来像「点击没生效」，实际上从头到尾就没拍到过设置页。
+
+排查窗口交互前先 `scripts/move-window.ps1 -MinWidth 800 -MaxWidth 1100 -X 950 -Y 60 -Raise` 把它挪到不重叠的地方。（合并成一个外壳窗口之后，窗口之间互相遮挡的问题基本消失了——这也是合并的附赠好处之一。）
+
+⚠️ 另外：`SetWindowPos` 移动窗口后 WebView2 的合成内容**可能留在原位置**，此时按屏幕截图会拍到一片空白，看起来像「白屏 bug」。抓窗口内容优先用 `PrintWindow`（`capture-window.ps1`），它按窗口抓、不受位置影响。
+
+#### 更省事的做法：别截图，直接问 DOM
+
+外壳页是普通 HTML，把 `http://127.0.0.1:<外壳端口>/settings.html` 存到本地、用浏览器打开，就能用 `getComputedStyle` 量对比度、用「把 `window.__TAURI__` 换成记录调用的桩、再 eval 页面自己的脚本」来断言点了某个控件到底发了哪些 IPC。**比截图比对可靠得多**，也不需要真实鼠标。
+
+（`file://` 打开时页面自己的脚本会在 `window.__TAURI__.core` 上抛错——所以可以先把桩塞进去再 `eval(script.textContent)`；`document.write` 重放整页在 WebView2/Chrome 上不一定会执行脚本。）
+
+> **键盘输入这条路走不通。** `SendKeys` 只投递给**前台窗口**，而我们的进程抢不到前台（`SetForegroundWindow` 对非前台进程静默失败，即便 `AttachThreadInput` + 最小化/还原也时灵时不灵）。需要往界面里输入文字的验证，别指望这条路——要么改成不依赖输入的场景，要么在测试里直接验证底层逻辑。
+
+排查「某个站点的图片出不来」时开 `MOEFLOW_MEDIA_DEBUG=1`：它会把 API 响应里被改写的每个存储 URL、以及每个被拒绝/失败的候选 origin 打到 stderr。这类问题的答案永远是**API 回来的是什么形式的 URL**，靠猜会绕远路。
+
+## 本地导出
+
+「成品 zip」和「LabelPlus txt」在客户端生成，不占用服务器 worker，已缓存过的图片零网络开销。
+
+输出严格复刻服务器 `app/tasks/output_project.py` 的结构：
+
+```
+images/<文件名>
+translations.txt
+project.json
+errors.txt        （仅有图片取不到时）
+```
+
+`translations.txt` 的格式细节（全部逐字对照后端源码移植）：
+
+- 头部 `1,0` / `-` / `框内` / `框外` / `-` / 注释行 —— 这三个词条走**后端 i18n**，客户端内置 zh 与 en 两套取值
+- 路径行 `>>>>>>>>[目录/文件名]<<<<<<<<`，目录来自 `ancestors` 逐级拼接
+- 标号行 16 个 `-`，`[序号]` 按 `rank` 升序从 **1** 开始、**每张图重新计数**
+- 译文行：优先 `proofread_content`，否则 `content`；空译文**仍写一行空行**
+- 换行统一为 CRLF，且是**朴素替换** `\n → \r\n`（内容里原有的 CRLF 会变成 CRCRLF，与服务器一致）
+- 译文选取复刻 `default_translations_order = ["-selected","-proofread_content","-edit_time"]`
+- 文件顺序复刻 `["dir_sort_name","type","sort_name"]`，其中 `sort_name` 把文件名里的数字段左补零到 6 位（所以 `2.jpg` 排在 `10.jpg` 前面）
+
+坐标用 **Python 兼容的浮点格式化**（`py_float_str`）。Rust 的 `{}` 与 Python 的 `repr()` 都是最短往返表示，但**记法不同**：Python 在十进制指数 ≤ −4 或 > 16 时切到科学计数法，Rust 从不。不处理的话 `1e-05` 会写成 `0.00001`，导出就不再字节一致。
+
+### ⚠️ 目标语言列表在另一个接口上
+
+导出对话框的「目标语言」曾经一直是空的，导出按钮因此永远不可点。原因是它读的是 `GET /v1/projects/{id}` 的 `targets` 字段——**那个接口没有这个字段**，只有 `target_count`。所以读到 `undefined`，下拉框空着，而且不报错。
+
+目标语言在 `GET /v1/projects/{id}/targets`，是个裸数组（不分页，上游组件传 `limit: 100000`，条数从 `x-pagination-count` 头里取）。
+
+顺带：作品一个目标都没有是**合法状态**，这时下拉框会明说「该作品没有翻译目标」，而不是留一个空下拉框让人猜。
+
+### ⚠️ 空白原文：必须知道的坑
+
+服务器导出遍历**全部**原文，但唯一的原文列表接口默认过滤掉空白原文（`show_blank=False`）。而**从 LabelPlus txt 导入时，没有译文的标号会产生空白原文**——这在图片上很常见。
+
+直接用这个接口生成 txt，这些原文会缺失，**导致后续标号编号整体错位，且不报错**。
+
+客户端的两道防线：
+1. 请求带 `show_blank=true`（`DefaultSchema` 设了 `unknown="EXCLUDE"`，对未打补丁的服务器是无害的）
+2. 用 `rank` 序列是否连续来**检测**过滤行为（`Source.to_api()` 带 `rank`；rank 是稠密分配的，出现空洞就说明有原文被吞了）→ 命中就明确告警并可选择中止
+
+要彻底消除差异，给后端打 2 行补丁：
+
+```bash
+python3 patches/apply-backend-show-blank.py /path/to/moeflow-backend
+```
+
+上游 `backend-v1` 与 iroha 定制分支都适用（两者该处代码相同）。
+
+### 本地导出与服务器导出的差异
+
+- 本地导出**不会**在服务器登记 `Output` 记录，因此 `project.has_output` 不会翻转，作品进度与「有成品」闸门不推进。需要推进进度时仍要走一次服务器导出。
+- 同名图片（不同目录下重名）的处理与服务器一致：后者覆盖前者，zip 里只留一个条目。
+
+## 外部依赖本地化
+
+前端右下角的「LabelPlus PS 脚本」原本直接指向第三方主机（`files.kozzzx.com`）。现在改走应用内的 `/__ps-script`：
+
+- 首次点击时下载并写入本地缓存，之后不再联网
+- 仍然通过原生「另存为」对话框保存
+
+**脚本本身不随安装包分发。** 它是 GPLv2，上游前端也只是提供外链而非打包——按需下载到用户自己的缓存里和浏览器原来的行为一致，随包分发则是另一回事。
+
+## 目录
+
+```
+frontend/          上游前端（锁定 commit 的 vendor，自带 git 仓库供打补丁）
+overlay/           叠加在上游之上的桌面集成（仅新增文件）
+patches/           给前端的补丁 + 给后端的 show_blank 修复
+scripts/           vendor / 构建 / MSVC 环境 / 窗口截图诊断
+src-tauri/
+  tauri.conf.json            全平台共用配置（打包目标写 `"all"`）
+  tauri.windows.conf.json    Windows 覆盖：nsis + WebView2 引导程序
+  tauri.macos.conf.json      macOS 覆盖：app、dmg
+  tauri.linux.conf.json      Linux 覆盖：deb、rpm、appimage
+  src/
+    pyfloat.rs     Python 兼容的浮点 repr
+    labelplus.rs   LabelPlus txt 生成
+    exporter.rs    本地导出编排（含排序与译文选取）
+    media.rs       LRU 磁盘缓存
+    rewrite.rs     API 响应里的存储 URL 改写到本地路由
+    server.rs      环路服务器：静态 + 反代 + 媒体 + 下载 + PS 脚本
+    shell.rs       外壳页服务器：实例选择页 + 设置页
+    profiles.rs    实例档位与连接探测
+    download.rs    原生另存为
+    commands.rs    IPC 接口
+    lib.rs         服务器生命周期 / 窗口 / 入口页
+    main.rs        窗口 / 托盘 / 单实例
+  permissions/
+    moeflow/       IPC 命令的 ACL 权限定义（每个命令一条）
+  capabilities/
+    default.json   哪些窗口 / 哪些来源可以使用这些命令
+  ui/
+    launcher.html  实例选择入口页（启动时显示）
+    settings.html  设置窗口（实例管理 + 缓存管理）
+```
+
+### 加一条 IPC 命令要动三个地方
+
+Tauri v2 的 ACL 是**默认拒绝**的，漏掉哪一步都只会得到「点下去没反应」：
+
+1. `commands.rs` 里写命令，并在 `main.rs` 的 `generate_handler!` 里注册
+2. `permissions/moeflow/default.toml` 里加一条 `[[permission]]`，把命令名写进 `commands.allow`
+3. 该文件末尾的 `[default]` 权限集里把这个标识符加进去（`capabilities/default.json` 引用的就是它）
+
+两个容易踩的点：
+
+- 权限集必须写成 `[default]` 表，**不能**写成 `[[permission]] identifier = "default"`——后者生成的是一个名叫 default 的普通权限，`default_permission` 解析成 `null`，于是什么都不放行，且构建照样成功。
+- 权限标识符只能用小写字母、连字符和**一个**冒号前缀，所以命令名里的下划线要换成连字符（`boot_payload` → `allow-boot-payload`），且不能直接在 capability 里写裸命令名。
+
+主窗口与两个外壳窗口都是从 `http://127.0.0.1:<端口>` 加载的——对 Tauri 来说属于**远程来源**，capability 里的 `remote.urls` 少了它们，`window.__TAURI__` 确实存在，但每次调用都会被静默拒绝。
+
+### 永远不要从同步命令里创建 webview 窗口
+
+见上文「一个外壳窗口，两个视图」——症状是白窗口 + 整个应用冻死。窗口只在 `setup()` 里建；命令里最多只做「显示 / 聚焦 / 导航已经存在的窗口」。
+
+### 命令要返回 `Result`，别把错误丢掉
+
+`open_settings` 曾经是这样：
+
+```rust
+let _ = WebviewWindowBuilder::new(...).build();   // 建不出来就什么都不发生
+```
+
+窗口创建失败 = 点按钮毫无反应 = 既没有报错也没有日志。命令现在返回 `Result<(), String>`，失败原因会经 `.catch(showError)` 出现在页面上；托盘菜单那条路径也一样打了日志。
+
+「点了没反应」和「点了但失败了」在界面上长得一模一样，而这个客户端里**大部分远程调用都可能失败**（服务器连不上、证书不对、代理挂了），所以别让任何一条路径静默失败。
+
+### 不要在窗口事件回调里同步调用窗口方法
+
+`on_window_event` 的闭包跑在**事件循环线程**上，而 `is_visible()` / `show()` 这些方法会把调用派发回事件循环并**等它答复**。在回调里同步调用它们 = 自己等自己。
+
+它只在另一个窗口正好忙的时候才卡住（webview 正在加载、导航中），所以表现是**间歇性的**，很容易被当成偶发问题放过去。要动别的窗口就交给 `async_runtime::spawn`，别在回调里直接做。
+
+
+## 缓存
+
+默认上限 2 GB，按 LRU 淘汰，可在设置里调整或清空。缓存目录在应用缓存目录下的 `media/`，键是上游 URL 的 SHA-256。
+
+URL 改写是**尽力而为**的：只改写已知媒体域名下、且出现在媒体字段（`cover_url` / `url` / `avatar` / …）里的绝对 URL。没命中的 URL 保持原样、照常直连加载——漏改写只损失缓存，不影响正确性。
+
+### ⚠️ 代理必须替浏览器带上 `Referer`
+
+`c01.m-t.pics`（尨译的阿里云 OSS 桶）设了 **Referer 防盗链，且拒绝空 Referer**。浏览器加载图片时天然带 Referer，所以站点上一切正常；我们的代理不带，于是**该站所有图片都 403**：
+
+```
+<Code>AccessDenied</Code><Message>You are denied by bucket referer policy.</Message>
+```
+
+代理就是替浏览器发请求的，所以取图和下载都要带上 `Referer: <站点 origin>/`（见 `Profile::media_referer`）。只带 `api_base` 的 origin 不够——那可能是另一个主机。
+
+> 这个故障还有个**会骗人的变体**：一旦某张图带着正确 Referer 成功过一次，OSS 边缘就可能把它缓存住，之后不带 Referer 也返回 200。于是现象看起来是「有的能显示有的不能」「刚才还好好的」，很容易被误判成并发或缓存问题。判断方法是换一个**从没成功过**的路径再测。
+
+### ⚠️ 状态码不是「取到了图」的证明
+
+各站的 nginx 都写着 `try_files $uri /index.html`，所以**任何不存在的路径都会回 200 + SPA 外壳**（`moetran.com/storage/xxx.png` 实测 `200 text/html`）。
+
+取图的重试循环如果只看 `status().is_success()`，就会把这段 HTML 当成图片收下、缓存起来，还按 URL 后缀报成 `image/png` —— 一张**永久损坏**的图，并且**挡住后面本来正确的候选 origin**（轮不到它重试）。所以候选响应要验证 Content-Type（`looks_like_an_image`）：`text/html` 一律拒绝，其余放过（对象存储常对图片回 `application/octet-stream`，白名单会误杀）。
+
+漏掉这条的症状就是「图片全部裂开，但缓存目录里躺着一堆 HTML 文件」。
+
+### ⚠️ 下载暂存文件必须每个请求一份
+
+一个工作台页面会**同时**发起一屏的取图请求。如果这些请求共用同一个暂存文件，后果不是「慢一点」而是**静默的数据损坏**：
+
+- 两个下载器各自的文件游标都从 0 开始，字节互相覆盖 → 最终文件是两张图的**拼接物**
+- 缓存把它当成合法内容存下来，之后**永远**返回这张错误的图
+- 抢输的那个 `rename` 在 Windows 上会因为另一个句柄还开着而失败 → 请求直接 500
+
+实测（修复前，14 个并发请求）：**2 个成功、12 个 500**，缓存里留下一个「JPEG 头 + PNG 尾」的缝合文件。修复后：14 个全 200，14 份缓存全部完整。
+
+所以暂存路径用的是**进程内自增序号**（`.incoming-<pid>-<seq>`），不是时间戳——秒级时间戳在一屏请求里必然撞车。
+
+索引文件带 `CACHE_VERSION`：一旦有版本会写出**键正确但内容错误**的条目，就把整个缓存丢弃重来。空缓存会在下次取图时自愈，而被污染的条目会一直错下去。
+
+## 已知限制
+
+- 邀请链接由前端用 `window.location` 拼出，在客户端里会得到 `127.0.0.1:端口/...`。复制给他人无效，需要在浏览器里从站点复制。
+- 上游 `BatchTranslateModal` 直接向存储域名取图；跨域被拦时可通过媒体代理绕行（见 `rewrite.rs`）。
+- 上游与 iroha 定制分支**不是**同一份前端，因此两套前端都随包发布：按实例探测 `/api/v1/site/flavor` 自动选择，也可在「设置 → 前端」手动指定。
